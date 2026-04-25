@@ -13,6 +13,7 @@ The app must work for guests without an account. Logged-in users can save histor
 ### In Scope
 
 - Search academic sources by topic using OpenAlex.
+- Three user start modes: Regular Query, Query-to-research-plan, and Claim-to-source.
 - Display result cards with title, authors, publication date, citation count, and external link.
 - Open a source detail view with summary and citation generator.
 - Generate citations without login.
@@ -22,7 +23,6 @@ The app must work for guests without an account. Logged-in users can save histor
 ### Out of Scope for MVP
 
 - Full paper reading or PDF parsing.
-- Advanced source recommendation beyond ranking by metadata.
 - Collaborative features.
 - Plagiarism detection.
 - Offline mode.
@@ -34,6 +34,14 @@ The app must work for guests without an account. Logged-in users can save histor
 
 ## Core User Flows
 
+### Start Modes
+
+The search entry screen must present exactly three start options:
+
+1. Regular Query
+2. Query-to-research-plan
+3. Claim-to-source
+
 ### Guest Flow
 
 1. User enters a topic.
@@ -43,12 +51,45 @@ The app must work for guests without an account. Logged-in users can save histor
 5. App shows source summary and citation generator.
 6. User copies a generated citation without signing in.
 
+### Guest Flow (Query-to-research-plan Start)
+
+1. User enters a topic and selects Query-to-research-plan start mode.
+2. App runs Query-to-research-plan to produce a refined research question, suggested queries, and keywords.
+3. User chooses one suggested query or continues with the refined query.
+4. App fetches sources from OpenAlex.
+5. User opens a source detail view, generates a citation, and copies it.
+
+### Guest Flow (Claim-to-source Start)
+
+1. User enters a claim or thesis statement and selects Claim-to-source start mode.
+2. App extracts keywords and generates one or more retrieval queries from the claim.
+3. App fetches sources from OpenAlex.
+4. App ranks sources by claim match score and displays rationale and confidence.
+5. User opens a source detail view, generates a citation, and copies it.
+
 ### Authenticated Flow
 
 1. User signs up or logs in.
 2. User searches for a topic.
 3. User views sources, summaries, and citations.
 4. User saves sources or citations.
+5. User views and clears history or deletes account.
+
+### Authenticated Flow (Query-to-research-plan Start)
+
+1. User signs up or logs in.
+2. User enters a topic and selects Query-to-research-plan start mode.
+3. App runs Query-to-research-plan and returns refined query options.
+4. User runs search and reviews results.
+5. User saves sources, citations, and optional enhanced-query artifacts.
+6. User views and clears history or deletes account.
+
+### Authenticated Flow (Claim-to-source Start)
+
+1. User signs up or logs in.
+2. User enters a claim and selects Claim-to-source start mode.
+3. App retrieves and ranks sources by claim match.
+4. User saves sources, citations, and claim match results.
 5. User views and clears history or deletes account.
 
 ## Functional Requirements
@@ -64,6 +105,34 @@ The app must work for guests without an account. Logged-in users can save histor
 	- Publication date
 	- Citation count
 	- External link to source
+
+### Search Start Modes
+
+- The search UI must include a required start mode selector with three options:
+	- Regular Query
+	- Query-to-research-plan
+	- Claim-to-source
+- Default start mode: Regular Query.
+- Each start mode must be executable independently from the first user action.
+
+### Query-to-research-plan (Optional)
+
+- Users can run Query-to-research-plan before fetching sources.
+- Query-to-research-plan output must include:
+	- Refined research question
+	- Suggested search queries (minimum 3)
+	- Topical keywords and synonyms
+- Users can choose any suggested query or keep their original query.
+
+### Claim-to-source (Optional)
+
+- Users can run Claim-to-source as a direct start mode by entering a claim or thesis statement first.
+- Claim-to-source flow must include retrieval of sources from OpenAlex before ranking claim matches.
+- Claim-to-source output must include:
+	- Ranked matching sources
+	- Short rationale for each match grounded in source metadata and/or summary
+	- Confidence indicator (High, Medium, Low)
+- If either optional AI start mode is unavailable, Regular Query must still work unchanged.
 
 ### Result Ranking
 
@@ -128,6 +197,7 @@ Selecting a result opens a detail view with:
 - Save search history.
 - Save citations.
 - Save sources.
+- Save start mode history and optional AI artifacts (refined question, selected suggested query, and claim-to-source runs).
 - Delete individual saved items.
 - Clear all history.
 - Permanently delete account.
@@ -136,6 +206,8 @@ Selecting a result opens a detail view with:
 
 - Search results should return in under 2 seconds.
 - AI summaries should return in under 3 seconds.
+- Query-to-research-plan should return in under 3 seconds.
+- Claim-to-source matching should return in under 3 seconds for up to 50 search results.
 - UI must be mobile responsive.
 - Session handling must be secure.
 - External links must open safely.
@@ -157,6 +229,18 @@ Selecting a result opens a detail view with:
 - id
 - userId
 - query
+- createdAt
+
+### EnhancedQueryItem
+
+- id
+- userId
+- originalQuery
+- refinedQuestion
+- suggestedQueries
+- selectedQuery
+- claimText
+- claimMatches
 - createdAt
 
 ### SavedSource
@@ -196,6 +280,66 @@ Returns a list of source objects with the following shape:
 	"citationCount": 0,
 	"externalUrl": "string",
 	"summary": "string"
+}
+```
+
+### `POST /api/research-plan`
+
+Optional Query-to-research-plan endpoint.
+
+Request body:
+
+```json
+{
+	"query": "string"
+}
+```
+
+Response body:
+
+```json
+{
+	"refinedQuestion": "string",
+	"suggestedQueries": ["string"],
+	"keywords": ["string"],
+	"synonyms": ["string"]
+}
+```
+
+### `POST /api/claim-match`
+
+Optional Claim-to-source endpoint.
+
+Request body:
+
+```json
+{
+	"claim": "string",
+	"sources": [
+		{
+			"id": "string",
+			"title": "string",
+			"authors": ["string"],
+			"publicationDate": "string",
+			"citationCount": 0,
+			"summary": "string"
+		}
+	]
+}
+```
+
+Response body:
+
+```json
+{
+	"matches": [
+		{
+			"sourceId": "string",
+			"score": 0.0,
+			"confidence": "High",
+			"rationale": "string"
+		}
+	]
 }
 ```
 
@@ -242,6 +386,14 @@ Requires authentication. Permanently deletes the account and related user data.
 - The original source link must always be shown next to the summary.
 - The summary should answer: what the source is about, why it is relevant, and one or two key topical keywords.
 
+## Enhanced AI Query Rules
+
+- Query-to-research-plan suggestions must be neutral and focused on search effectiveness.
+- Claim-to-source rationale must be grounded in available source metadata and/or generated summary.
+- Claim-to-source must not assert that a source proves a claim when evidence is uncertain; it should indicate uncertainty through confidence.
+- Enhanced outputs must always preserve access to the original source link and metadata.
+- Claim-to-source start mode must support direct entry of a claim without requiring a prior topic search.
+
 ## Error Handling
 
 - If OpenAlex returns no results, show a friendly empty state and suggest broader search terms.
@@ -250,6 +402,9 @@ Requires authentication. Permanently deletes the account and related user data.
 - If summary generation fails, still show the source metadata and citation generator.
 - If AI summary fails because `AI_API_KEY` is missing, show: "No API key found. Add your API key in settings or .env.local, then retry." and keep a Retry action visible.
 - If AI summary fails because credits are exhausted or provider quota is exceeded, show: "API credits exhausted. Recharge or use a different key, then retry." and keep a Retry action visible.
+- If Query-to-research-plan fails, fall back to standard search input and keep Search action available.
+- If Claim-to-source fails, keep the source list visible and allow retry without re-running search.
+- If Claim-to-source fails before retrieval completes, show retry and allow switching to Regular Query without losing user input.
 
 ## Acceptance Criteria
 
@@ -258,6 +413,14 @@ Requires authentication. Permanently deletes the account and related user data.
 - Given a topic query, the app returns a results list from OpenAlex.
 - The user can open a result detail view.
 - Search can be triggered by Enter or button click.
+
+### Optional AI Start Modes
+
+- The user can start from exactly one of three modes: Regular Query, Query-to-research-plan, or Claim-to-source.
+- Given a topic query with Query-to-research-plan selected, the app returns a refined research question and at least 3 suggested queries.
+- The user can pick a suggested query and run search results successfully.
+- Given Claim-to-source selected as the initial mode, the user can submit a claim and receive ranked matching sources with rationale and confidence.
+- If optional AI mode endpoints fail, Regular Query and citation flows remain usable.
 
 ### Citation Generation
 
@@ -290,6 +453,7 @@ Requires authentication. Permanently deletes the account and related user data.
 - Email verification: Resend (free tier)
 - Citation formatting: citation-js
 - AI summaries: user-supplied API key for the chosen AI provider
+- AI start mode tools: Query-to-research-plan and Claim-to-source using user-supplied AI provider key
 
 ## API Key Setup
 
@@ -347,10 +511,10 @@ npm run dev
 
 ### How The API Key Is Used
 
-- The API key is used only for AI-generated summaries and any provider-backed AI features.
+- The API key is used for AI-generated summaries and optional enhanced query features.
 - Search and citation formatting should continue to work even if the API key is missing.
 - If the key is invalid or missing, the app should show a clear error and fall back to source metadata plus citation generation.
-- AI summary requests must provide a Retry action when failures are due to missing key, invalid key, rate limit, or exhausted credits.
+- AI summary and optional AI start mode requests must provide a Retry action when failures are due to missing key, invalid key, rate limit, or exhausted credits.
 
 ## Suggested Build Order
 
@@ -362,11 +526,13 @@ npm run dev
 6. Add authentication.
 7. Add save history and account management.
 8. Add summary generation.
-9. Add error states, loading states, and empty states.
+9. Add two AI start modes (Query-to-research-plan and Claim-to-source) from the initial search screen.
+10. Add error states, loading states, and empty states.
 
 ## Definition of Done
 
 - A user can search for sources, open a result, read a summary, generate a citation, and copy it.
+- A user can begin with one of three start modes: Regular Query, Query-to-research-plan, or Claim-to-source.
 - Guest mode works end to end.
 - Authenticated users can save and manage research data.
 - The app has clear loading, error, and empty states.
