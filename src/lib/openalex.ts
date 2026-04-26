@@ -40,6 +40,7 @@ interface OpenAlexWork {
     landing_page_url?: string | null;
     pdf_url?: string | null;
   } | null;
+  abstract_inverted_index?: Record<string, number[]> | null;
 }
 
 interface OpenAlexResponse {
@@ -108,6 +109,28 @@ function getAccessType(work: OpenAlexWork): "free" | "paid" | "unknown" {
   }
 
   return "unknown";
+}
+
+function normalizeText(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function decodeAbstractInvertedIndex(index: Record<string, number[]>) {
+  const positions = new Map<number, string>();
+
+  for (const [token, tokenPositions] of Object.entries(index)) {
+    for (const position of tokenPositions) {
+      if (Number.isInteger(position) && position >= 0 && !positions.has(position)) {
+        positions.set(position, token);
+      }
+    }
+  }
+
+  const words = Array.from(positions.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([, token]) => token);
+
+  return normalizeText(words.join(" "));
 }
 
 function buildCacheKey(query: string, page: number, perPage: number) {
@@ -179,6 +202,10 @@ function mapOpenAlexWorkToSource(work: OpenAlexWork): Source {
     publicationDate: work.publication_date ?? "",
     citationCount: work.cited_by_count ?? 0,
     accessType: getAccessType(work),
+    summary:
+      work.abstract_inverted_index && Object.keys(work.abstract_inverted_index).length > 0
+        ? decodeAbstractInvertedIndex(work.abstract_inverted_index)
+        : undefined,
     externalUrl: normalizeExternalUrl(
       work.primary_location?.landing_page_url,
       work.primary_location?.pdf_url,
@@ -226,6 +253,7 @@ export async function searchOpenAlexPage(
       "open_access",
       "best_oa_location",
       "primary_location",
+      "abstract_inverted_index",
     ].join(",")
   );
 

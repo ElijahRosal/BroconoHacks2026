@@ -77,6 +77,20 @@ interface CitationResponse {
   };
 }
 
+interface SourceSummaryResponse {
+  ok: boolean;
+  data?: {
+    summary: string;
+    provider: "ai" | "fallback";
+    usedFallback: boolean;
+    warning?: string;
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
 interface SavedSourcesResponse {
   ok: boolean;
   data?: {
@@ -196,7 +210,7 @@ function getKeywordsFromTitle(title: string) {
   return Array.from(new Set(words)).slice(0, 2);
 }
 
-function buildMetadataSummary(source: Source) {
+function buildFallbackSummary(source: Source) {
   const keywords = getKeywordsFromTitle(source.title);
   const keywordText =
     keywords.length > 0 ? keywords.join(", ") : "the topic described in the source title";
@@ -260,6 +274,9 @@ export default function Home() {
   const [claimRefinedQuestion, setClaimRefinedQuestion] = useState<string>("");
   const [claimRetrievalQueries, setClaimRetrievalQueries] = useState<string[]>([]);
   const [claimKeywords, setClaimKeywords] = useState<string[]>([]);
+  const [summariesBySource, setSummariesBySource] = useState<Record<string, string>>({});
+  const [summaryLoadingBySource, setSummaryLoadingBySource] = useState<Record<string, boolean>>({});
+  const [summaryErrorsBySource, setSummaryErrorsBySource] = useState<Record<string, string>>({});
   const [debouncedQuery, setDebouncedQuery] = useState(query);
   const queryRef = useRef(query);
   const searchAbortRef = useRef<AbortController | null>(null);
@@ -526,6 +543,9 @@ export default function Home() {
       setCitationErrorsBySource({});
       setCopyStatusBySource({});
       setCitationLoadingSourceId(null);
+      setSummariesBySource({});
+      setSummaryLoadingBySource({});
+      setSummaryErrorsBySource({});
       setBatchCitations([]);
       setBatchCitationError(null);
       setBatchCopyStatus("idle");
@@ -622,6 +642,9 @@ export default function Home() {
       setCitationErrorsBySource({});
       setCopyStatusBySource({});
       setCitationLoadingSourceId(null);
+      setSummariesBySource({});
+      setSummaryLoadingBySource({});
+      setSummaryErrorsBySource({});
       setBatchCitations([]);
       setBatchCitationError(null);
       setBatchCopyStatus("idle");
@@ -853,11 +876,65 @@ export default function Home() {
     }
   }
 
-  function toggleSourceDetails(sourceId: string) {
+  async function generateSummaryForSource(source: Source, forceRefresh = false) {
+    if (!forceRefresh && summariesBySource[source.id]) {
+      return;
+    }
+
+    setSummaryLoadingBySource((current) => ({
+      ...current,
+      [source.id]: true,
+    }));
+    setSummaryErrorsBySource((current) => ({
+      ...current,
+      [source.id]: "",
+    }));
+
+    try {
+      const response = await fetch("/api/source-summary", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ source }),
+      });
+
+      const payload = (await response.json()) as SourceSummaryResponse;
+      if (!response.ok || !payload.ok || !payload.data) {
+        throw new Error(payload.error?.message || "Unable to generate source summary.");
+      }
+
+      setSummariesBySource((current) => ({
+        ...current,
+        [source.id]: payload.data?.summary || buildFallbackSummary(source),
+      }));
+    } catch (error) {
+      setSummariesBySource((current) => ({
+        ...current,
+        [source.id]: buildFallbackSummary(source),
+      }));
+      setSummaryErrorsBySource((current) => ({
+        ...current,
+        [source.id]: error instanceof Error ? error.message : "Unable to generate AI summary.",
+      }));
+    } finally {
+      setSummaryLoadingBySource((current) => ({
+        ...current,
+        [source.id]: false,
+      }));
+    }
+  }
+
+  function toggleSourceDetails(source: Source) {
+    const isExpanded = expandedSourceIds.includes(source.id);
+    if (!isExpanded) {
+      void generateSummaryForSource(source);
+    }
+
     setExpandedSourceIds((current) =>
-      current.includes(sourceId)
-        ? current.filter((id) => id !== sourceId)
-        : [...current, sourceId]
+      current.includes(source.id)
+        ? current.filter((id) => id !== source.id)
+        : [...current, source.id]
     );
   }
 
@@ -1570,7 +1647,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => {
-                      toggleSourceDetails(source.id);
+                      toggleSourceDetails(source);
                     }}
                     className="inline-flex items-center gap-2 rounded-md bg-slate-950 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
                     aria-pressed={isExpanded}
@@ -1605,7 +1682,28 @@ export default function Home() {
                 {isExpanded ? (
                   <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-5">
                     <h3 className="text-base font-semibold text-slate-950">Source detail</h3>
-                    <p className="mt-2 text-sm leading-6 text-slate-700">{buildMetadataSummary(source)}</p>
+                    {summaryLoadingBySource[source.id] ? (
+                      <p className="mt-2 text-sm leading-6 text-slate-600">Generating AI summary...</p>
+                    ) : (
+                      <p className="mt-2 text-sm leading-6 text-slate-700">
+                        {summariesBySource[source.id] || buildFallbackSummary(source)}
+                      </p>
+                    )}
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void generateSummaryForSource(source, true);
+                        }}
+                        disabled={Boolean(summaryLoadingBySource[source.id])}
+                        className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        Regenerate summary
+                      </button>
+                      {summaryErrorsBySource[source.id] ? (
+                        <p className="text-xs text-amber-700">Using fallback summary. {summaryErrorsBySource[source.id]}</p>
+                      ) : null}
+                    </div>
 
                     <div className="mt-5 border-t border-slate-200 pt-5">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
