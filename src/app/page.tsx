@@ -1509,7 +1509,9 @@ export default function Home() {
                 </p>
                 <div className="mt-3 space-y-3 text-sm leading-6 text-slate-800">
                   {batchCitations.map((item) => (
-                    <p key={item.sourceId}>{item.citationText}</p>
+                    <p key={item.sourceId} className="break-words [overflow-wrap:anywhere]">
+                      {item.citationText}
+                    </p>
                   ))}
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
@@ -1756,7 +1758,7 @@ export default function Home() {
                           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                             Style: {generatedCitation.style}
                           </p>
-                          <p className="mt-3 text-sm leading-6 text-slate-800">
+                          <p className="mt-3 break-words text-sm leading-6 text-slate-800 [overflow-wrap:anywhere]">
                             {generatedCitation.citationText}
                           </p>
                           <div className="mt-4 flex flex-wrap gap-2">

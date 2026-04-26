@@ -426,6 +426,33 @@ function buildFallbackSummary(source: Source) {
   ].join(" ");
 }
 
+function getSummaryWarning(error: unknown) {
+  if (!(error instanceof Error)) {
+    return "AI summary unavailable.";
+  }
+
+  const message = error.message.trim();
+  const lower = message.toLowerCase();
+
+  if (!message) {
+    return "AI summary unavailable.";
+  }
+
+  if (
+    lower.includes("ai_api_key") ||
+    lower.includes("no api key") ||
+    lower.includes("not configured") ||
+    lower.includes("credits exhausted") ||
+    lower.includes("quota") ||
+    lower.includes("rate limit") ||
+    lower.includes("provider returned status")
+  ) {
+    return message;
+  }
+
+  return "AI summary unavailable. Using metadata-only summary instead.";
+}
+
 function buildSummaryPrompt(source: Source, abstractText: string, sourceType: "abstract" | "paper-text") {
   const authorText = source.authors.length > 0 ? source.authors.join(", ") : "Unknown authors";
   const contentLabel = sourceType === "paper-text" ? "Paper text excerpt" : "Abstract text";
@@ -611,7 +638,7 @@ export async function POST(request: Request) {
       summary: clipText(fallbackSummary, 1200),
       provider: "fallback",
       usedFallback: true,
-      warning: error instanceof Error ? error.message : "AI summary unavailable.",
+      warning: getSummaryWarning(error),
     });
   }
 }
