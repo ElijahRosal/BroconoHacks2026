@@ -278,7 +278,6 @@ export default function Home() {
   const [summariesBySource, setSummariesBySource] = useState<Record<string, string>>({});
   const [summaryLoadingBySource, setSummaryLoadingBySource] = useState<Record<string, boolean>>({});
   const [summaryErrorsBySource, setSummaryErrorsBySource] = useState<Record<string, string>>({});
-  const [debouncedQuery, setDebouncedQuery] = useState(query);
   const queryRef = useRef(query);
   const searchAbortRef = useRef<AbortController | null>(null);
   const claimAbortRef = useRef<AbortController | null>(null);
@@ -346,15 +345,7 @@ export default function Home() {
   const canGoNext = resultsHasMore || resultsPage < totalResultPages;
 
   useEffect(() => {
-    const timeoutId = setTimeout(() => {
-      setDebouncedQuery(query.trim());
-    }, 450);
-
     queryRef.current = query;
-
-    return () => {
-      clearTimeout(timeoutId);
-    };
   }, [query]);
 
   useEffect(() => {
@@ -784,27 +775,6 @@ export default function Home() {
     await performSearch(originalQuery, 1, resultsLimit);
   }
 
-  useEffect(() => {
-    const trimmedQuery = debouncedQuery.trim();
-    if (!trimmedQuery || startMode === "query-to-research-plan") {
-      return;
-    }
-
-    const signature = `${startMode}::${trimmedQuery}`;
-    if (lastSubmittedSignatureRef.current === signature) {
-      return;
-    }
-
-    lastSubmittedSignatureRef.current = signature;
-
-    if (startMode === "claim-to-source") {
-      void requestClaimMatches(trimmedQuery, 1, resultsLimit);
-      return;
-    }
-
-    void performSearch(trimmedQuery, 1, resultsLimit);
-  }, [debouncedQuery, performSearch, requestClaimMatches, resultsLimit, startMode]);
-
   function changeCitationStyle(nextStyle: CitationStyle) {
     setCitationStyle(nextStyle);
     setCitationTextsBySource({});
@@ -1082,7 +1052,7 @@ export default function Home() {
       <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
         <div className="mx-auto max-w-3xl text-center">
           <h1 className="text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">
-            AI Citation Finder &amp; Generator
+            Citeable
           </h1>
           <p className="mt-3 text-sm leading-6 text-slate-600 sm:text-base">
             Search academic sources, compare results, and generate citation-ready references.

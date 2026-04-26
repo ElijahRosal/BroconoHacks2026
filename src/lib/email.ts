@@ -42,9 +42,9 @@ export async function sendVerificationEmail(params: {
   await resend.emails.send({
     from: EMAIL_FROM,
     to: params.toEmail,
-    subject: "Verify your email for AI Citation Finder",
+    subject: "Verify your email for Citeable",
     html: `
-      <p>Welcome to AI Citation Finder &amp; Generator.</p>
+      <p>Welcome to Citeable.</p>
       <p>Please verify your email to activate your account:</p>
       <p><a href="${verifyUrl}">Verify email</a></p>
       <p>If you did not create this account, you can ignore this email.</p>

@@ -15,7 +15,7 @@ export function AppHeader() {
           </span>
           <span className="min-w-0">
             <span className="block truncate text-sm font-semibold tracking-tight text-slate-950 sm:text-base">
-              AI Citation Finder
+              Citeable
             </span>
             <span className="hidden text-xs text-slate-600 sm:block">
               Search, cite, and save academic sources

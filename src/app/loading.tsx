@@ -4,7 +4,7 @@ export default function Loading() {
       <section className="w-full rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <p className="text-sm font-semibold text-slate-900">Loading app...</p>
         <p className="mt-1 text-sm text-slate-600">
-          Preparing AI Citation Finder &amp; Generator.
+          Preparing Citeable.
         </p>
       </section>
     </main>

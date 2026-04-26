@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Citation Finder & Generator",
+  title: "Citeable",
   description:
     "Find credible academic sources, read concise summaries, and generate citations.",
 };
