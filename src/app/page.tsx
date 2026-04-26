@@ -279,6 +279,8 @@ export default function Home() {
   const [claimRefinedQuestion, setClaimRefinedQuestion] = useState<string>("");
   const [claimRetrievalQueries, setClaimRetrievalQueries] = useState<string[]>([]);
   const [claimKeywords, setClaimKeywords] = useState<string[]>([]);
+  const [claimAiUsed, setClaimAiUsed] = useState<boolean>(false);
+  const [claimWarning, setClaimWarning] = useState<string>("");
   const [summariesBySource, setSummariesBySource] = useState<Record<string, string>>({});
   const [summaryLoadingBySource, setSummaryLoadingBySource] = useState<Record<string, boolean>>({});
   const [summaryErrorsBySource, setSummaryErrorsBySource] = useState<Record<string, string>>({});
@@ -378,6 +380,8 @@ export default function Home() {
       setClaimRefinedQuestion("");
       setClaimRetrievalQueries([]);
       setClaimKeywords([]);
+      setClaimAiUsed(false);
+      setClaimWarning("");
       setClaimMatchError(null);
     }
 
@@ -640,6 +644,8 @@ export default function Home() {
       setClaimRefinedQuestion(payload.data.refinedQuestion);
       setClaimRetrievalQueries(payload.data.retrievalQueries);
       setClaimKeywords(payload.data.keywords);
+      setClaimAiUsed(Boolean(payload.data.aiUsed));
+      setClaimWarning(payload.data.warning ?? "");
       setClaimMatchError(payload.data.matchError ?? null);
       setExpandedSourceIds([]);
       setSelectedSourceIds([]);
@@ -662,6 +668,8 @@ export default function Home() {
       setClaimRefinedQuestion("");
       setClaimRetrievalQueries([]);
       setClaimKeywords([]);
+      setClaimAiUsed(false);
+      setClaimWarning("");
       setClaimMatchError(
         error instanceof Error
           ? `${error.message} Falling back to a standard search.`
@@ -1274,6 +1282,16 @@ export default function Home() {
               <p className="mt-1 text-sm text-slate-700">
                 Ranked sources for the claim you entered. Pick a retrieval query to continue searching.
               </p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span
+                  className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                    claimAiUsed ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"
+                  }`}
+                >
+                  {claimAiUsed ? "AI-enhanced" : "Fallback plan"}
+                </span>
+                {claimWarning ? <span className="text-xs text-amber-800">{claimWarning}</span> : null}
+              </div>
             </div>
             <button
               type="button"

@@ -43,6 +43,8 @@ export interface ClaimMatchSearchResponse {
   hasMore: boolean;
   sources: Source[];
   matches: ClaimMatch[];
+  aiUsed?: boolean;
+  warning?: string;
   matchError?: string;
 }
 

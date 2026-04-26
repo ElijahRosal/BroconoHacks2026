@@ -172,6 +172,20 @@ function clipList(items: string[], maxItems: number) {
   return uniqueTerms(items).slice(0, maxItems);
 }
 
+function countSharedTerms(left: string, right: string) {
+  const leftTerms = new Set(splitTerms(left));
+  const rightTerms = new Set(splitTerms(right));
+  let shared = 0;
+
+  for (const term of leftTerms) {
+    if (rightTerms.has(term)) {
+      shared += 1;
+    }
+  }
+
+  return shared;
+}
+
 function buildSubjectPhrase(terms: string[]) {
   const [firstTerm, secondTerm] = terms;
   if (!firstTerm) {
@@ -440,6 +454,23 @@ function stripDanglingQueryLabel(text: string) {
   return text.replace(/\s+(?:refined\s+query|search\s+query|query)\s*$/i, "").trim();
 }
 
+function hasSuspiciousTrailingToken(candidate: string) {
+  const trailingToken = candidate.match(/([A-Za-z]+)$/)?.[1];
+  if (!trailingToken) {
+    return false;
+  }
+
+  if (trailingToken.length >= 4) {
+    return false;
+  }
+
+  if (/^[A-Z0-9]{2,4}$/.test(trailingToken)) {
+    return false;
+  }
+
+  return true;
+}
+
 function isCompleteResearchQuery(candidate: string) {
   const normalized = normalizeText(candidate);
   if (normalized.length < 12 || normalized.length > 220) {
@@ -457,7 +488,15 @@ function isCompleteResearchQuery(candidate: string) {
     /\b(?:of|in|for|with|about|on|to|by|under)\s*$/i,
   ];
 
-  return !fragmentPatterns.some((pattern) => pattern.test(normalized));
+  if (fragmentPatterns.some((pattern) => pattern.test(normalized))) {
+    return false;
+  }
+
+  if (hasSuspiciousTrailingToken(normalized)) {
+    return false;
+  }
+
+  return true;
 }
 
 function normalizeQueryCandidate(text: string) {
@@ -466,6 +505,42 @@ function normalizeQueryCandidate(text: string) {
 
 function sameQueryCandidate(left: string, right: string) {
   return compactQuery(normalizeQueryCandidate(left)).toLowerCase() === compactQuery(normalizeQueryCandidate(right)).toLowerCase();
+}
+
+function matchesUserIntent(originalQuery: string, candidate: string) {
+  const normalizedOriginal = compactQuery(originalQuery);
+  const normalizedCandidate = normalizeQueryCandidate(candidate);
+
+  if (!normalizedOriginal || !normalizedCandidate) {
+    return false;
+  }
+
+  if (sameQueryCandidate(normalizedOriginal, normalizedCandidate)) {
+    return true;
+  }
+
+  const originalTerms = uniqueTerms(splitTerms(normalizedOriginal));
+  const candidateTerms = uniqueTerms(splitTerms(normalizedCandidate));
+  if (originalTerms.length === 0 || candidateTerms.length === 0) {
+    return false;
+  }
+
+  const sharedTerms = countSharedTerms(normalizedOriginal, normalizedCandidate);
+  const minimumSharedTerms = Math.min(Math.max(1, Math.ceil(originalTerms.length / 2)), 3);
+
+  return sharedTerms >= minimumSharedTerms;
+}
+
+function pickBestRefinedQuestion(
+  originalQuery: string,
+  aiRefinedQuestion: string | null | undefined,
+  heuristicRefinedQuestion: string
+) {
+  const candidates = [aiRefinedQuestion, heuristicRefinedQuestion, compactQuery(originalQuery)].filter(
+    (candidate): candidate is string => typeof candidate === "string" && candidate.length > 0
+  );
+
+  return candidates.find((candidate) => matchesUserIntent(originalQuery, candidate)) ?? compactQuery(originalQuery);
 }
 
 function parseAiResearchPlanText(text: string) {
@@ -477,8 +552,11 @@ function parseAiResearchPlanText(text: string) {
   );
 
   const suggestedQueries = clipList(
-    Array.from(cleaned.matchAll(/^QUERY:\s*(.+)$/gim))
-      .map((match) => normalizeQueryCandidate(match[1] ?? ""))
+    [
+      ...Array.from(cleaned.matchAll(/^QUERY:\s*(.+)$/gim)).map((match) => match[1] ?? ""),
+      ...Array.from(cleaned.matchAll(/^\s*-\s+(.+)$/gim)).map((match) => match[1] ?? ""),
+    ]
+      .map((candidate) => normalizeQueryCandidate(candidate))
       .filter((candidate) => Boolean(candidate) && !sameQueryCandidate(candidate, refinedQuestion)),
     MAX_SUGGESTED_QUERIES
   );
@@ -610,8 +688,14 @@ async function buildResearchPlan(query: string, openAccessOnly = false): Promise
         ? `AI enhancement unavailable. ${error.message}`
         : "AI enhancement unavailable. Using fallback research plan.";
   }
+  const selectedRefinedQuestion = pickBestRefinedQuestion(
+    query,
+    aiPlan?.refinedQuestion,
+    heuristicPlan.refinedQuestion
+  );
   const mergedCandidates = clipList(
   [
+    selectedRefinedQuestion,
     aiPlan?.refinedQuestion,
     heuristicPlan.refinedQuestion,
     ...(aiPlan?.suggestedQueries ?? []),
@@ -630,23 +714,26 @@ async function buildResearchPlan(query: string, openAccessOnly = false): Promise
         );
 
   const filteredSuggestedQueries = suggestedQueries.filter(
-    (candidate) => !sameQueryCandidate(candidate, aiPlan?.refinedQuestion ?? heuristicPlan.refinedQuestion)
+    (candidate) => !sameQueryCandidate(candidate, selectedRefinedQuestion)
   );
 
+  if (!sameQueryCandidate(selectedRefinedQuestion, aiPlan?.refinedQuestion ?? "")) {
+    warning = warning
+      ? `${warning} Refined query was adjusted to stay closer to the original topic.`
+      : "Refined query was adjusted to stay closer to the original topic.";
+  }
+
   return {
-    refinedQuestion:
-      aiPlan?.refinedQuestion && aiPlan.refinedQuestion.length > 12
-        ? aiPlan.refinedQuestion
-        : heuristicPlan.refinedQuestion,
+    refinedQuestion: selectedRefinedQuestion,
     suggestedQueries:
       filteredSuggestedQueries.length >= MIN_SUGGESTED_QUERIES
         ? filteredSuggestedQueries
-        : suggestedQueries.filter((candidate) => !sameQueryCandidate(candidate, heuristicPlan.refinedQuestion)),
+        : suggestedQueries.filter((candidate) => !sameQueryCandidate(candidate, selectedRefinedQuestion)),
     keywords:
       aiPlan?.keywords && aiPlan.keywords.length > 0 ? aiPlan.keywords : heuristicPlan.keywords,
     synonyms:
       aiPlan?.synonyms && aiPlan.synonyms.length > 0 ? aiPlan.synonyms : heuristicPlan.synonyms,
-    aiUsed: Boolean(aiPlan?.refinedQuestion && aiPlan.refinedQuestion.length > 12),
+    aiUsed: Boolean(aiPlan?.refinedQuestion && sameQueryCandidate(selectedRefinedQuestion, aiPlan.refinedQuestion)),
     warning,
   };
 }
