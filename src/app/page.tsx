@@ -1474,7 +1474,7 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="mt-5 flex flex-col gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="mt-5 flex flex-col gap-3 border-t border-slate-200 pt-5 sm:flex-row sm:items-end sm:justify-between">
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -1498,17 +1498,35 @@ export default function Home() {
                   Clear
                 </button>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  void generateBatchCitations();
-                }}
-                disabled={isBatchCitationLoading}
-                className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                <FileText aria-hidden className="h-4 w-4" />
-                {isBatchCitationLoading ? "Generating list..." : "Generate citation list"}
-              </button>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <label className="block text-sm font-semibold text-slate-950" htmlFor="batch-citation-style">
+                  Citation style
+                  <select
+                    id="batch-citation-style"
+                    className="mt-2 block min-h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm font-normal text-slate-950 outline-none ring-sky-500 focus:ring-2 sm:w-40"
+                    value={citationStyle}
+                    onChange={(event) => changeCitationStyle(event.target.value as CitationStyle)}
+                  >
+                    {CITATION_STYLE_VALUES.map((style) => (
+                      <option key={style} value={style}>
+                        {style}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    void generateBatchCitations();
+                  }}
+                  disabled={isBatchCitationLoading}
+                  className="inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  <FileText aria-hidden className="h-4 w-4" />
+                  {isBatchCitationLoading ? "Generating list..." : `Generate ${citationStyle} list`}
+                </button>
+              </div>
             </div>
 
             {accountDataError ? <p className="mt-4 text-sm text-rose-700">{accountDataError}</p> : null}
