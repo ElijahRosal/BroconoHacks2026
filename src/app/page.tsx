@@ -79,21 +79,6 @@ interface CitationResponse {
   };
 }
 
-interface SourceSummaryResponse {
-  ok: boolean;
-  data?: {
-    summary: string;
-    provider: "ai" | "fallback";
-    usedFallback: boolean;
-    abstractSource?: string;
-    warning?: string;
-  };
-  error?: {
-    code: string;
-    message: string;
-  };
-}
-
 interface SavedSourcesResponse {
   ok: boolean;
   data?: {
@@ -215,12 +200,61 @@ function getKeywordsFromTitle(title: string) {
   return Array.from(new Set(words)).slice(0, 2);
 }
 
+function normalizeSummaryText(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function clipSummarySentences(value: string, maxSentences = 2) {
+  const normalized = normalizeSummaryText(value);
+  if (!normalized) {
+    return "";
+  }
+
+  const sentences = normalized.match(/[^.!?]+[.!?]?/g) ?? [];
+  return sentences
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .slice(0, maxSentences)
+    .join(" ");
+}
+
+function isUsefulSourceSummary(value: string | undefined) {
+  const normalized = normalizeSummaryText(value ?? "");
+  if (normalized.length < 120) {
+    return false;
+  }
+
+  const lower = normalized.toLowerCase();
+  return !lower.startsWith("this source appears to discuss ");
+}
+
 function buildFallbackSummary(source: Source) {
+  const summaryPreview = isUsefulSourceSummary(source.summary)
+    ? clipSummarySentences(source.summary ?? "", 2)
+    : "";
+  const authorText =
+    source.authors.length > 0
+      ? source.authors.slice(0, 3).join(", ")
+      : "unknown authors";
+  const publicationText = source.publicationDate
+    ? `published on ${formatPublicationDate(source.publicationDate)}`
+    : "with no publication date listed";
+  const citationText =
+    source.citationCount > 0
+      ? `It has ${source.citationCount} citations recorded in OpenAlex.`
+      : "It does not have a citation count listed in OpenAlex yet.";
+
+  if (summaryPreview) {
+    return `${summaryPreview} This paper was written by ${authorText} and ${publicationText}. ${citationText}`;
+  }
+
   const keywords = getKeywordsFromTitle(source.title);
   const keywordText =
-    keywords.length > 0 ? keywords.join(", ") : "the topic described in the source title";
+    keywords.length > 0
+      ? `topics like ${keywords.join(" and ")}`
+      : "the topic described in the title";
 
-  return `This source appears to discuss ${source.title}. It is likely relevant to your search because it covers ${keywordText}.`;
+  return `${source.title} is a source by ${authorText}, ${publicationText}. It likely relates to ${keywordText}. ${citationText}`;
 }
 
 function normalizeResultsLimit(value: number) {
@@ -281,9 +315,6 @@ export default function Home() {
   const [claimKeywords, setClaimKeywords] = useState<string[]>([]);
   const [claimAiUsed, setClaimAiUsed] = useState<boolean>(false);
   const [claimWarning, setClaimWarning] = useState<string>("");
-  const [summariesBySource, setSummariesBySource] = useState<Record<string, string>>({});
-  const [summaryLoadingBySource, setSummaryLoadingBySource] = useState<Record<string, boolean>>({});
-  const [summaryErrorsBySource, setSummaryErrorsBySource] = useState<Record<string, string>>({});
   const queryRef = useRef(query);
   const searchAbortRef = useRef<AbortController | null>(null);
   const claimAbortRef = useRef<AbortController | null>(null);
@@ -548,9 +579,6 @@ export default function Home() {
       setCitationErrorsBySource({});
       setCopyStatusBySource({});
       setCitationLoadingSourceId(null);
-      setSummariesBySource({});
-      setSummaryLoadingBySource({});
-      setSummaryErrorsBySource({});
       setBatchCitations([]);
       setBatchCitationError(null);
       setBatchCopyStatus("idle");
@@ -873,65 +901,7 @@ export default function Home() {
     }
   }
 
-  async function generateSummaryForSource(source: Source, forceRefresh = false) {
-    if (!forceRefresh && summariesBySource[source.id]) {
-      return;
-    }
-
-    setSummaryLoadingBySource((current) => ({
-      ...current,
-      [source.id]: true,
-    }));
-    setSummaryErrorsBySource((current) => ({
-      ...current,
-      [source.id]: "",
-    }));
-
-    try {
-      const response = await fetch("/api/source-summary", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ source }),
-      });
-
-      const payload = (await response.json()) as SourceSummaryResponse;
-      if (!response.ok || !payload.ok || !payload.data) {
-        throw new Error(payload.error?.message || "Unable to generate source summary.");
-      }
-
-      setSummariesBySource((current) => ({
-        ...current,
-        [source.id]: payload.data?.summary || buildFallbackSummary(source),
-      }));
-      setSummaryErrorsBySource((current) => ({
-        ...current,
-        [source.id]: payload.data?.usedFallback ? payload.data.warning || "Using metadata-only summary." : "",
-      }));
-    } catch (error) {
-      setSummariesBySource((current) => ({
-        ...current,
-        [source.id]: buildFallbackSummary(source),
-      }));
-      setSummaryErrorsBySource((current) => ({
-        ...current,
-        [source.id]: error instanceof Error ? error.message : "Unable to generate AI summary.",
-      }));
-    } finally {
-      setSummaryLoadingBySource((current) => ({
-        ...current,
-        [source.id]: false,
-      }));
-    }
-  }
-
   function toggleSourceDetails(source: Source) {
-    const isExpanded = expandedSourceIds.includes(source.id);
-    if (!isExpanded) {
-      void generateSummaryForSource(source);
-    }
-
     setExpandedSourceIds((current) =>
       current.includes(source.id)
         ? current.filter((id) => id !== source.id)
@@ -1727,28 +1697,9 @@ export default function Home() {
                 {isExpanded ? (
                   <div className="mt-5 rounded-lg border border-slate-200 bg-slate-50 p-5">
                     <h3 className="text-base font-semibold text-slate-950">Source detail</h3>
-                    {summaryLoadingBySource[source.id] ? (
-                      <p className="mt-2 text-sm leading-6 text-slate-600">Generating AI summary...</p>
-                    ) : (
-                      <p className="mt-2 text-sm leading-6 text-slate-700">
-                        {summariesBySource[source.id] || buildFallbackSummary(source)}
-                      </p>
-                    )}
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void generateSummaryForSource(source, true);
-                        }}
-                        disabled={Boolean(summaryLoadingBySource[source.id])}
-                        className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        Regenerate summary
-                      </button>
-                      {summaryErrorsBySource[source.id] ? (
-                        <p className="text-xs text-amber-700">Using fallback summary. {summaryErrorsBySource[source.id]}</p>
-                      ) : null}
-                    </div>
+                    <p className="mt-2 text-sm leading-6 text-slate-700">
+                      {buildFallbackSummary(source)}
+                    </p>
 
                     <div className="mt-5 border-t border-slate-200 pt-5">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
