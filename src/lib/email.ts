@@ -15,7 +15,11 @@ function getResendClient() {
 function resolveOrigin(requestOrigin?: string) {
   const nextAuthUrl = process.env.NEXTAUTH_URL?.trim();
   if (nextAuthUrl) {
-    return nextAuthUrl;
+    try {
+      return new URL(nextAuthUrl).origin;
+    } catch {
+      // Ignore invalid NEXTAUTH_URL and fall back to request origin.
+    }
   }
 
   if (requestOrigin) {
@@ -39,7 +43,7 @@ export async function sendVerificationEmail(params: {
   const origin = resolveOrigin(params.requestOrigin);
   const verifyUrl = `${origin}/verify-email?token=${encodeURIComponent(params.token)}`;
 
-  await resend.emails.send({
+  const result = await resend.emails.send({
     from: EMAIL_FROM,
     to: params.toEmail,
     subject: "Verify your email for Citeable",
@@ -50,4 +54,8 @@ export async function sendVerificationEmail(params: {
       <p>If you did not create this account, you can ignore this email.</p>
     `,
   });
+
+  if (result.error) {
+    throw new Error(`Email provider error: ${result.error.message}`);
+  }
 }
