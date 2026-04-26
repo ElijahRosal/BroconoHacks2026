@@ -1,4 +1,5 @@
 import { apiError, apiSuccess } from "@/lib/api";
+import { getOptionalAiConfig } from "@/lib/env";
 import { searchOpenAlex } from "@/lib/openalex";
 import type { ResearchPlanResponse } from "@/types/domain";
 
@@ -10,6 +11,27 @@ interface ResearchPlanBody {
 const MAX_SUGGESTED_QUERIES = 6;
 const MIN_SUGGESTED_QUERIES = 3;
 const MAX_OPENALEX_CHECKS = 12;
+const PLAN_TIMEOUT_MS = 15_000;
+const DEFAULT_OPENAI_MODEL = "gpt-4o-mini";
+const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+
+interface OpenAiChatCompletionResponse {
+  choices?: Array<{
+    message?: {
+      content?: string | null;
+    } | null;
+  }>;
+}
+
+interface GoogleGenerateContentResponse {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string | null;
+      }>;
+    };
+  }>;
+}
 
 const STOP_WORDS = new Set([
   "a",
@@ -121,6 +143,10 @@ function compactQuery(query: string) {
   return query.trim().replace(/\s+/g, " ");
 }
 
+function normalizeText(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 function normalizeTerm(term: string) {
   return TERM_CORRECTIONS[term] ?? term;
 }
@@ -140,6 +166,10 @@ function splitTerms(query: string) {
 
 function uniqueTerms(terms: string[]) {
   return Array.from(new Set(terms.map((term) => compactQuery(term)).filter(Boolean)));
+}
+
+function clipList(items: string[], maxItems: number) {
+  return uniqueTerms(items).slice(0, maxItems);
 }
 
 function formatTermList(terms: string[]) {
@@ -233,7 +263,7 @@ async function getSearchableSuggestedQueries(candidates: string[], openAccessOnl
   return checks.filter((candidate): candidate is string => Boolean(candidate));
 }
 
-async function buildResearchPlan(query: string, openAccessOnly = false): Promise<ResearchPlanResponse> {
+function buildHeuristicResearchPlan(query: string) {
   const terms = uniqueTerms(splitTerms(query));
   const baseQuery = compactQuery(query);
   const focusTerms = terms.slice(0, 5);
@@ -246,18 +276,235 @@ async function buildResearchPlan(query: string, openAccessOnly = false): Promise
       ? `What does current research conclude about ${phrase}?`
       : `What does current research conclude about ${compactQuery(query)}?`;
 
-  const candidates = buildSuggestedQueryCandidates(query, terms);
-  const searchableQueries = await getSearchableSuggestedQueries(candidates, openAccessOnly);
-  const suggestedQueries =
-    searchableQueries.length >= MIN_SUGGESTED_QUERIES
-      ? searchableQueries.slice(0, MAX_SUGGESTED_QUERIES)
-      : uniqueTerms([...searchableQueries, ...candidates]).slice(0, MIN_SUGGESTED_QUERIES);
+  return {
+    refinedQuestion,
+    suggestedQueries: buildSuggestedQueryCandidates(query, terms),
+    keywords: keywordTerms.length > 0 ? keywordTerms : splitTerms(baseQuery).slice(0, 4),
+    synonyms: synonyms.length > 0 ? synonyms : focusTerms.map((term) => `${term} research`),
+  };
+}
+
+function extractJsonObject(text: string) {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) {
+    return null;
+  }
+
+  return text.slice(start, end + 1);
+}
+
+function parseOpenAiText(payload: OpenAiChatCompletionResponse) {
+  return normalizeText(payload.choices?.[0]?.message?.content ?? "");
+}
+
+function parseGoogleText(payload: GoogleGenerateContentResponse) {
+  const parts = payload.candidates?.[0]?.content?.parts ?? [];
+  return normalizeText(parts.map((part) => part.text ?? "").join(" "));
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = PLAN_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function isGoogleApiKey(apiKey: string) {
+  return apiKey.startsWith("AIza");
+}
+
+function resolveModel(apiKey: string, model: string) {
+  if (isGoogleApiKey(apiKey)) {
+    return model.toLowerCase().startsWith("gemini") ? model : DEFAULT_GEMINI_MODEL;
+  }
+
+  return model || DEFAULT_OPENAI_MODEL;
+}
+
+function buildResearchPlanPrompt(query: string, heuristicPlan: ResearchPlanResponse) {
+  return [
+    "You help students turn rough academic topics into better research questions and search queries.",
+    "Return valid JSON only with this shape:",
+    '{ "refinedQuestion": string, "suggestedQueries": string[], "keywords": string[], "synonyms": string[] }',
+    "Rules:",
+    "- Write one natural-sounding refined research question, not a template.",
+    "- Preserve the user's intent and domain.",
+    "- Suggested queries should be concise academic search phrases.",
+    "- Keywords should be the most important concepts only.",
+    "- Synonyms should be useful alternate search terms.",
+    "- Do not include markdown fences or commentary.",
+    "",
+    `User query: ${compactQuery(query)}`,
+    `Heuristic refined question: ${heuristicPlan.refinedQuestion}`,
+    `Heuristic suggested queries: ${heuristicPlan.suggestedQueries.join(" | ")}`,
+    `Heuristic keywords: ${heuristicPlan.keywords.join(" | ")}`,
+    `Heuristic synonyms: ${heuristicPlan.synonyms.join(" | ")}`,
+  ].join("\n");
+}
+
+async function generateWithOpenAiCompatible(prompt: string, apiKey: string, model: string, baseUrl?: string) {
+  const endpointBase = (baseUrl?.trim() || "https://api.openai.com/v1").replace(/\/$/, "");
+  const response = await fetchWithTimeout(`${endpointBase}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.3,
+      max_tokens: 300,
+      messages: [
+        {
+          role: "system",
+          content: "You produce concise, well-formed academic research planning JSON.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Research plan provider returned status ${response.status}.`);
+  }
+
+  const payload = (await response.json()) as OpenAiChatCompletionResponse;
+  const text = parseOpenAiText(payload);
+  if (!text) {
+    throw new Error("Research plan provider returned an empty response.");
+  }
+
+  return text;
+}
+
+async function generateWithGoogle(prompt: string, apiKey: string, model: string, baseUrl?: string) {
+  const endpointBase = (baseUrl?.trim() || "https://generativelanguage.googleapis.com/v1beta").replace(
+    /\/$/,
+    ""
+  );
+  const response = await fetchWithTimeout(
+    `${endpointBase}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [{ text: prompt }],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.3,
+          maxOutputTokens: 300,
+          responseMimeType: "application/json",
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Research plan provider returned status ${response.status}.`);
+  }
+
+  const payload = (await response.json()) as GoogleGenerateContentResponse;
+  const text = parseGoogleText(payload);
+  if (!text) {
+    throw new Error("Research plan provider returned an empty response.");
+  }
+
+  return text;
+}
+
+function coerceStringArray(value: unknown, maxItems: number) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return clipList(
+    value.filter((item): item is string => typeof item === "string").map((item) => normalizeText(item)),
+    maxItems
+  );
+}
+
+async function generateAiResearchPlan(query: string, heuristicPlan: ResearchPlanResponse) {
+  const { apiKey, baseUrl, model } = getOptionalAiConfig();
+  if (!apiKey) {
+    return null;
+  }
+
+  const resolvedModel = resolveModel(apiKey, model);
+  const prompt = buildResearchPlanPrompt(query, heuristicPlan);
+  const responseText = isGoogleApiKey(apiKey)
+    ? await generateWithGoogle(prompt, apiKey, resolvedModel, baseUrl)
+    : await generateWithOpenAiCompatible(prompt, apiKey, resolvedModel, baseUrl);
+
+  const jsonText = extractJsonObject(responseText);
+  if (!jsonText) {
+    throw new Error("Research plan provider returned invalid JSON.");
+  }
+
+  const parsed = JSON.parse(jsonText) as {
+    refinedQuestion?: unknown;
+    suggestedQueries?: unknown;
+    keywords?: unknown;
+    synonyms?: unknown;
+  };
+
+  const refinedQuestion =
+    typeof parsed.refinedQuestion === "string" ? normalizeText(parsed.refinedQuestion) : "";
 
   return {
     refinedQuestion,
+    suggestedQueries: coerceStringArray(parsed.suggestedQueries, MAX_SUGGESTED_QUERIES),
+    keywords: coerceStringArray(parsed.keywords, 5),
+    synonyms: coerceStringArray(parsed.synonyms, 8),
+  };
+}
+
+async function buildResearchPlan(query: string, openAccessOnly = false): Promise<ResearchPlanResponse> {
+  const heuristicPlan = buildHeuristicResearchPlan(query);
+  const aiPlan = await generateAiResearchPlan(query, heuristicPlan).catch(() => null);
+  const mergedCandidates = clipList(
+    [
+      ...(aiPlan?.suggestedQueries ?? []),
+      ...heuristicPlan.suggestedQueries,
+      compactQuery(query),
+    ],
+    MAX_OPENALEX_CHECKS
+  );
+
+  const searchableQueries = await getSearchableSuggestedQueries(mergedCandidates, openAccessOnly);
+  const suggestedQueries =
+    searchableQueries.length >= MIN_SUGGESTED_QUERIES
+      ? searchableQueries.slice(0, MAX_SUGGESTED_QUERIES)
+      : clipList([...searchableQueries, ...mergedCandidates], MAX_SUGGESTED_QUERIES).slice(
+          0,
+          MIN_SUGGESTED_QUERIES
+        );
+
+  return {
+    refinedQuestion:
+      aiPlan?.refinedQuestion && aiPlan.refinedQuestion.length > 12
+        ? aiPlan.refinedQuestion
+        : heuristicPlan.refinedQuestion,
     suggestedQueries,
-    keywords: keywordTerms.length > 0 ? keywordTerms : splitTerms(baseQuery).slice(0, 4),
-    synonyms: synonyms.length > 0 ? synonyms : focusTerms.map((term) => `${term} research`),
+    keywords:
+      aiPlan?.keywords && aiPlan.keywords.length > 0 ? aiPlan.keywords : heuristicPlan.keywords,
+    synonyms:
+      aiPlan?.synonyms && aiPlan.synonyms.length > 0 ? aiPlan.synonyms : heuristicPlan.synonyms,
   };
 }
 
