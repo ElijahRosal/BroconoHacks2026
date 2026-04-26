@@ -33,6 +33,12 @@ interface CitationResponse {
   };
 }
 
+interface BatchCitationItem {
+  sourceId: string;
+  sourceTitle: string;
+  citationText: string;
+}
+
 const MODE_HELP: Record<StartMode, string> = {
   "regular-query": "Search for sources directly by topic.",
   "query-to-research-plan":
@@ -105,15 +111,22 @@ export default function Home() {
   const [citationError, setCitationError] = useState<string | null>(null);
   const [isCitationLoading, setIsCitationLoading] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "success" | "error">("idle");
+  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+  const [batchCitations, setBatchCitations] = useState<BatchCitationItem[]>([]);
+  const [isBatchCitationLoading, setIsBatchCitationLoading] = useState(false);
+  const [batchCitationError, setBatchCitationError] = useState<string | null>(null);
+  const [batchCopyStatus, setBatchCopyStatus] = useState<"idle" | "success" | "error">(
+    "idle"
+  );
 
   const modeHint = useMemo(() => MODE_HELP[startMode], [startMode]);
   const selectedSource = useMemo(
     () => results.find((source) => source.id === selectedSourceId) ?? null,
     [results, selectedSourceId]
   );
-  const selectedSummary = useMemo(
-    () => (selectedSource ? buildMetadataSummary(selectedSource) : ""),
-    [selectedSource]
+  const selectedSources = useMemo(
+    () => results.filter((source) => selectedSourceIds.includes(source.id)),
+    [results, selectedSourceIds]
   );
 
   async function runSearch() {
@@ -137,9 +150,13 @@ export default function Home() {
 
       setResults(payload.data);
       setSelectedSourceId(null);
+      setSelectedSourceIds([]);
       setCitationText("");
       setCitationError(null);
       setCopyStatus("idle");
+      setBatchCitations([]);
+      setBatchCitationError(null);
+      setBatchCopyStatus("idle");
     } catch (error) {
       setResults([]);
       setErrorMessage(
@@ -204,6 +221,82 @@ export default function Home() {
       setCopyStatus("success");
     } catch {
       setCopyStatus("error");
+    }
+  }
+
+  function toggleSourceSelection(sourceId: string) {
+    setSelectedSourceIds((current) =>
+      current.includes(sourceId)
+        ? current.filter((id) => id !== sourceId)
+        : [...current, sourceId]
+    );
+  }
+
+  async function generateBatchCitations() {
+    if (selectedSources.length === 0) {
+      setBatchCitationError("Select at least one source first.");
+      return;
+    }
+
+    setIsBatchCitationLoading(true);
+    setBatchCitationError(null);
+    setBatchCopyStatus("idle");
+
+    try {
+      const citationPromises = selectedSources.map(async (source) => {
+        const response = await fetch("/api/citation", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            source,
+            style: citationStyle,
+          }),
+        });
+
+        const payload = (await response.json()) as CitationResponse;
+        if (!response.ok || !payload.ok || !payload.data) {
+          throw new Error(
+            payload.error?.message || `Citation generation failed for ${source.title}.`
+          );
+        }
+
+        return {
+          sourceId: source.id,
+          sourceTitle: source.title,
+          citationText: payload.data.citationText,
+        } satisfies BatchCitationItem;
+      });
+
+      const items = await Promise.all(citationPromises);
+      setBatchCitations(items);
+    } catch (error) {
+      setBatchCitations([]);
+      setBatchCitationError(
+        error instanceof Error
+          ? error.message
+          : "Failed to generate citation list. Please retry."
+      );
+    } finally {
+      setIsBatchCitationLoading(false);
+    }
+  }
+
+  async function copyBatchCitationList() {
+    if (batchCitations.length === 0) {
+      return;
+    }
+
+    const content = batchCitations
+      .map((item, index) => `${index + 1}. ${item.citationText}`)
+      .join("\n\n");
+
+    try {
+      await navigator.clipboard.writeText(content);
+      setBatchCopyStatus("success");
+    } catch {
+      setBatchCopyStatus("error");
     }
   }
 
@@ -306,12 +399,92 @@ export default function Home() {
 
       {!isLoading && !errorMessage && results.length > 0 ? (
         <section className="grid gap-4">
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-slate-700">
+                Selected sources: <span className="font-semibold text-slate-900">{selectedSourceIds.length}</span>
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedSourceIds(results.map((source) => source.id))}
+                  className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100"
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSourceIds([])}
+                  className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100"
+                >
+                  Clear
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void generateBatchCitations();
+                  }}
+                  disabled={isBatchCitationLoading}
+                  className="rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {isBatchCitationLoading ? "Generating list..." : "Generate citation list"}
+                </button>
+              </div>
+            </div>
+
+            {batchCitationError ? (
+              <p className="mt-3 text-sm text-rose-700">{batchCitationError}</p>
+            ) : null}
+
+            {batchCitations.length > 0 ? (
+              <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  Citation list ({citationStyle})
+                </p>
+                <ol className="mt-2 list-decimal space-y-2 pl-5 text-sm text-slate-800">
+                  {batchCitations.map((item) => (
+                    <li key={item.sourceId}>
+                      <p className="font-semibold text-slate-900">{item.sourceTitle}</p>
+                      <p>{item.citationText}</p>
+                    </li>
+                  ))}
+                </ol>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void copyBatchCitationList();
+                  }}
+                  className="mt-3 rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700"
+                >
+                  Copy full citation list
+                </button>
+                {batchCopyStatus === "success" ? (
+                  <p className="mt-2 text-xs text-emerald-700">Citation list copied.</p>
+                ) : null}
+                {batchCopyStatus === "error" ? (
+                  <p className="mt-2 text-xs text-rose-700">Copy failed. Please copy manually.</p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+
           {results.map((source) => (
             <article
               key={source.id}
               className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
             >
-              <h2 className="text-lg font-semibold text-slate-900">{source.title}</h2>
+              <div className="flex items-start justify-between gap-3">
+                <h2 className="text-lg font-semibold text-slate-900">{source.title}</h2>
+                <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={selectedSourceIds.includes(source.id)}
+                    onChange={() => toggleSourceSelection(source.id)}
+                    className="h-4 w-4"
+                  />
+                  Select
+                </label>
+              </div>
               <dl className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
                 <div>
                   <dt className="font-semibold text-slate-900">Authors</dt>
@@ -346,7 +519,7 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => {
-                  setSelectedSourceId(source.id);
+                  setSelectedSourceId((current) => (current === source.id ? null : source.id));
                   setCitationStyle("MLA");
                   setCitationText("");
                   setCitationError(null);
@@ -355,123 +528,90 @@ export default function Home() {
                 className="mt-4 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700"
                 aria-pressed={selectedSourceId === source.id}
               >
-                Open details
+                {selectedSourceId === source.id ? "Close details" : "Open details"}
               </button>
+
+              {selectedSourceId === source.id ? (
+                <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <h3 className="text-base font-semibold text-slate-900">Source detail</h3>
+                  <p className="mt-2 text-sm text-slate-700">{buildMetadataSummary(source)}</p>
+
+                  <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                      <label
+                        className="block text-sm font-semibold text-slate-900"
+                        htmlFor={`citation-style-${source.id}`}
+                      >
+                        Citation style
+                        <select
+                          id={`citation-style-${source.id}`}
+                          className="mt-2 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900"
+                          value={citationStyle}
+                          onChange={(event) => setCitationStyle(event.target.value as CitationStyle)}
+                        >
+                          {CITATION_STYLE_VALUES.map((style) => (
+                            <option key={style} value={style}>
+                              {style}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void generateCitation();
+                        }}
+                        disabled={isCitationLoading}
+                        className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
+                      >
+                        {isCitationLoading ? "Generating..." : "Generate citation"}
+                      </button>
+                    </div>
+
+                    {citationError ? (
+                      <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                        <p>{citationError}</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void generateCitation();
+                          }}
+                          className="mt-2 rounded bg-rose-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-600"
+                        >
+                          Retry citation
+                        </button>
+                      </div>
+                    ) : null}
+
+                    {citationText ? (
+                      <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                          Style: {citationStyle}
+                        </p>
+                        <p className="mt-2 text-sm text-slate-800">{citationText}</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void copyCitation();
+                          }}
+                          className="mt-3 rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700"
+                        >
+                          Copy citation
+                        </button>
+                        {copyStatus === "success" ? (
+                          <p className="mt-2 text-xs text-emerald-700">Copied to clipboard.</p>
+                        ) : null}
+                        {copyStatus === "error" ? (
+                          <p className="mt-2 text-xs text-rose-700">Copy failed. Please copy manually.</p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
             </article>
           ))}
-        </section>
-      ) : null}
-
-      {selectedSource ? (
-        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-2xl font-semibold text-slate-900">Source detail</h2>
-          <p className="mt-3 text-sm text-slate-700">{selectedSummary}</p>
-
-          <dl className="mt-4 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
-            <div>
-              <dt className="font-semibold text-slate-900">Title</dt>
-              <dd>{selectedSource.title}</dd>
-            </div>
-            <div>
-              <dt className="font-semibold text-slate-900">Authors</dt>
-              <dd>{formatAuthors(selectedSource.authors)}</dd>
-            </div>
-            <div>
-              <dt className="font-semibold text-slate-900">Publication date</dt>
-              <dd>{formatPublicationDate(selectedSource.publicationDate)}</dd>
-            </div>
-            <div>
-              <dt className="font-semibold text-slate-900">Citation count</dt>
-              <dd>{selectedSource.citationCount}</dd>
-            </div>
-            <div>
-              <dt className="font-semibold text-slate-900">Original source</dt>
-              <dd>
-                {selectedSource.externalUrl ? (
-                  <a
-                    href={selectedSource.externalUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sky-700 underline underline-offset-2 hover:text-sky-900"
-                  >
-                    Open source page
-                  </a>
-                ) : (
-                  <span>Unavailable</span>
-                )}
-              </dd>
-            </div>
-          </dl>
-
-          <div className="mt-6 rounded-xl border border-slate-200 p-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-              <label className="block text-sm font-semibold text-slate-900" htmlFor="citation-style">
-                Citation style
-                <select
-                  id="citation-style"
-                  className="mt-2 block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-normal text-slate-900"
-                  value={citationStyle}
-                  onChange={(event) => setCitationStyle(event.target.value as CitationStyle)}
-                >
-                  {CITATION_STYLE_VALUES.map((style) => (
-                    <option key={style} value={style}>
-                      {style}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <button
-                type="button"
-                onClick={() => {
-                  void generateCitation();
-                }}
-                disabled={isCitationLoading}
-                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {isCitationLoading ? "Generating..." : "Generate citation"}
-              </button>
-            </div>
-
-            {citationError ? (
-              <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-                <p>{citationError}</p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void generateCitation();
-                  }}
-                  className="mt-2 rounded bg-rose-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-600"
-                >
-                  Retry citation
-                </button>
-              </div>
-            ) : null}
-
-            {citationText ? (
-              <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                  Style: {citationStyle}
-                </p>
-                <p className="mt-2 text-sm text-slate-800">{citationText}</p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void copyCitation();
-                  }}
-                  className="mt-3 rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700"
-                >
-                  Copy citation
-                </button>
-                {copyStatus === "success" ? (
-                  <p className="mt-2 text-xs text-emerald-700">Copied to clipboard.</p>
-                ) : null}
-                {copyStatus === "error" ? (
-                  <p className="mt-2 text-xs text-rose-700">Copy failed. Please copy manually.</p>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
         </section>
       ) : null}
     </main>
