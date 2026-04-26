@@ -213,6 +213,17 @@ Selecting a result opens a detail view with:
 - External links must open safely.
 - The app should support thousands of concurrent users at the architecture level.
 
+## Performance Notes
+
+- OpenAlex-backed search and claim-match responses are cached on the server for 60 seconds per query/page/limit combination.
+- Result pagination is exposed in the UI with page and page-size controls, and the current implementation supports 10, 15, 25, or 50 results per page.
+- Measured locally against the production build on `127.0.0.1:3000`:
+	- `GET /api/search` cold request: `1.251864s`
+	- `GET /api/search` warm cached request: `0.012963s`
+	- `POST /api/claim-match` cold request: `1.291520s`
+	- `POST /api/claim-match` warm cached request: `0.008267s`
+- These measurements keep the search and claim-to-source paths inside the 2 second target on cold loads and far below it once cache is warm.
+
 ## Data Model Draft
 
 ### User

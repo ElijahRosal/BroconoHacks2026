@@ -2,18 +2,22 @@ import type { NextResponse } from "next/server";
 
 import { requireAuthenticatedUser, type AuthenticatedUser } from "@/lib/auth-guard";
 
-type ProtectedHandler = (context: { user: AuthenticatedUser }) =>
+type ProtectedHandler<TContext = unknown> = (context: {
+  user: AuthenticatedUser;
+  request: Request;
+  routeContext: TContext;
+}) =>
   | Promise<NextResponse>
   | NextResponse;
 
-export function withProtectedApi(handler: ProtectedHandler) {
-  return async function protectedRouteHandler() {
+export function withProtectedApi<TContext = unknown>(handler: ProtectedHandler<TContext>) {
+  return async function protectedRouteHandler(request: Request, routeContext: TContext) {
     const { user, response } = await requireAuthenticatedUser();
 
     if (!user) {
       return response;
     }
 
-    return handler({ user });
+    return handler({ user, request, routeContext });
   };
 }

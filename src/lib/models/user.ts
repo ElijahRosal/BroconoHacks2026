@@ -121,3 +121,29 @@ export async function verifyEmailWithToken(rawToken: string) {
 
   return db.collection<UserDocument>(USER_COLLECTION).findOne({ _id: tokenDoc.userId });
 }
+
+export async function deleteUserById(id: string) {
+  if (!ObjectId.isValid(id)) {
+    return false;
+  }
+
+  const db = await getMongoDb();
+  const result = await db.collection<UserDocument>(USER_COLLECTION).deleteOne({
+    _id: new ObjectId(id),
+  });
+
+  return result.deletedCount > 0;
+}
+
+export async function deleteVerificationTokensForUser(userId: string) {
+  if (!ObjectId.isValid(userId)) {
+    return 0;
+  }
+
+  const db = await getMongoDb();
+  const result = await db
+    .collection<VerificationTokenDocument>(VERIFICATION_COLLECTION)
+    .deleteMany({ userId: new ObjectId(userId) });
+
+  return result.deletedCount;
+}
