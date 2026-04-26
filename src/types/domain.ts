@@ -7,6 +7,7 @@ export interface Source {
   publicationDate: string;
   citationCount: number;
   externalUrl: string;
+  pdfUrl?: string;
   accessType?: "free" | "paid" | "unknown";
   summary?: string;
 }

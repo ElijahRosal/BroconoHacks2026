@@ -522,7 +522,7 @@ export default function Home() {
 
     try {
       const response = await fetch(
-        `/api/search?q=${encodeURIComponent(trimmedQuery)}&startMode=${encodeURIComponent(startMode)}&page=${encodeURIComponent(String(page))}&limit=${encodeURIComponent(String(limit))}`,
+        `/api/search?q=${encodeURIComponent(trimmedQuery)}&startMode=${encodeURIComponent(startMode)}&page=${encodeURIComponent(String(page))}&limit=${encodeURIComponent(String(limit))}&openAccessOnly=${encodeURIComponent(String(openAccessOnly))}`,
         {
           signal: controller.signal,
         }
@@ -572,7 +572,7 @@ export default function Home() {
         setIsLoading(false);
       }
     }
-  }, [resultsLimit, startMode]);
+  }, [openAccessOnly, resultsLimit, startMode]);
 
   const requestClaimMatches = useCallback(async (
     trimmedClaim: string,
@@ -603,7 +603,7 @@ export default function Home() {
 
     try {
       const response = await fetch(
-        `/api/claim-match?page=${encodeURIComponent(String(page))}&limit=${encodeURIComponent(String(limit))}`,
+        `/api/claim-match?page=${encodeURIComponent(String(page))}&limit=${encodeURIComponent(String(limit))}&openAccessOnly=${encodeURIComponent(String(openAccessOnly))}`,
         {
           method: "POST",
           headers: {
@@ -673,7 +673,7 @@ export default function Home() {
         setIsClaimMatching(false);
       }
     }
-  }, [performSearch, resultsLimit, startMode]);
+  }, [openAccessOnly, performSearch, resultsLimit, startMode]);
 
   async function rerunCurrentQuery(page = resultsPage, limit = resultsLimit) {
     const trimmedQuery = query.trim();
@@ -715,7 +715,7 @@ export default function Home() {
           "Content-Type": "application/json",
         },
         signal: controller.signal,
-        body: JSON.stringify({ query: trimmedQuery }),
+        body: JSON.stringify({ query: trimmedQuery, openAccessOnly }),
       });
 
       const payload = (await response.json()) as ResearchPlanResponseWrapper;

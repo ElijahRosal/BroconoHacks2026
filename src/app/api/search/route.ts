@@ -12,6 +12,7 @@ function isStartMode(value: string): value is StartMode {
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const query = (url.searchParams.get("q") ?? "").trim();
+  const openAccessOnly = (url.searchParams.get("openAccessOnly") ?? "false").trim() === "true";
   const startModeParam = (url.searchParams.get("startMode") ?? "regular-query").trim();
   const startMode: StartMode = isStartMode(startModeParam)
     ? startModeParam
@@ -33,6 +34,7 @@ export async function GET(request: Request) {
     const searchResult = await searchOpenAlexPage(query, {
       page,
       perPage: limit,
+      openAccessOnly,
     });
 
     const session = await getServerSession(authOptions);

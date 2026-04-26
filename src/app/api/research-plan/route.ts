@@ -4,6 +4,7 @@ import type { ResearchPlanResponse } from "@/types/domain";
 
 interface ResearchPlanBody {
   query?: string;
+  openAccessOnly?: boolean;
 }
 
 const MAX_SUGGESTED_QUERIES = 6;
@@ -217,11 +218,11 @@ function buildSuggestedQueryCandidates(query: string, terms: string[]) {
   return uniqueTerms(candidates).slice(0, MAX_OPENALEX_CHECKS);
 }
 
-async function getSearchableSuggestedQueries(candidates: string[]) {
+async function getSearchableSuggestedQueries(candidates: string[], openAccessOnly = false) {
   const checks = await Promise.all(
     candidates.map(async (candidate) => {
       try {
-        const sources = await searchOpenAlex(candidate, 1);
+        const sources = await searchOpenAlex(candidate, 1, { openAccessOnly });
         return sources.length > 0 ? candidate : null;
       } catch {
         return null;
@@ -232,7 +233,7 @@ async function getSearchableSuggestedQueries(candidates: string[]) {
   return checks.filter((candidate): candidate is string => Boolean(candidate));
 }
 
-async function buildResearchPlan(query: string): Promise<ResearchPlanResponse> {
+async function buildResearchPlan(query: string, openAccessOnly = false): Promise<ResearchPlanResponse> {
   const terms = uniqueTerms(splitTerms(query));
   const baseQuery = compactQuery(query);
   const focusTerms = terms.slice(0, 5);
@@ -246,7 +247,7 @@ async function buildResearchPlan(query: string): Promise<ResearchPlanResponse> {
       : `What does current research conclude about ${compactQuery(query)}?`;
 
   const candidates = buildSuggestedQueryCandidates(query, terms);
-  const searchableQueries = await getSearchableSuggestedQueries(candidates);
+  const searchableQueries = await getSearchableSuggestedQueries(candidates, openAccessOnly);
   const suggestedQueries =
     searchableQueries.length >= MIN_SUGGESTED_QUERIES
       ? searchableQueries.slice(0, MAX_SUGGESTED_QUERIES)
@@ -270,12 +271,13 @@ export async function POST(request: Request) {
   }
 
   const query = body.query?.trim() ?? "";
+  const openAccessOnly = body.openAccessOnly ?? false;
   if (!query) {
     return apiError("BAD_REQUEST", "Query is required.", 400);
   }
 
   try {
-    const plan = await buildResearchPlan(query);
+    const plan = await buildResearchPlan(query, openAccessOnly);
     return apiSuccess(plan);
   } catch (error) {
     return apiError(

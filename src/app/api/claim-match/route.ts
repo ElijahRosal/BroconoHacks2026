@@ -85,6 +85,7 @@ export async function POST(request: Request) {
   const url = new URL(request.url);
   const pageParam = Number.parseInt(url.searchParams.get("page") ?? "1", 10);
   const limitParam = Number.parseInt(url.searchParams.get("limit") ?? "15", 10);
+  const openAccessOnly = (url.searchParams.get("openAccessOnly") ?? "false").trim() === "true";
   const page = Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 1;
   const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 30) : 15;
 
@@ -113,7 +114,7 @@ export async function POST(request: Request) {
     const searchResults = await Promise.all(
       retrievalQueries.map(async (retrievalQuery) => {
         try {
-          const sources = await searchOpenAlex(retrievalQuery, 12);
+          const sources = await searchOpenAlex(retrievalQuery, 12, { openAccessOnly });
           return { retrievalQuery, sources };
         } catch {
           return { retrievalQuery, sources: [] as Source[] };

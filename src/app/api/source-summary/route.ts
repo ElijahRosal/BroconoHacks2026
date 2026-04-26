@@ -29,6 +29,10 @@ interface OpenAlexWorkResponse {
   abstract_inverted_index?: Record<string, number[]> | null;
 }
 
+interface PdfParseResult {
+  text?: string;
+}
+
 const SUMMARY_TIMEOUT_MS = 15_000;
 
 function normalizeText(value: string) {
@@ -42,6 +46,14 @@ function clipText(value: string, maxLength: number) {
   }
 
   return `${normalized.slice(0, maxLength - 3)}...`;
+}
+
+async function parsePdfText(pdfBuffer: Buffer) {
+  const pdfParse = (await import("pdf-parse")) as unknown as (
+    buffer: Buffer
+  ) => Promise<PdfParseResult>;
+  const result = await pdfParse(pdfBuffer);
+  return normalizeText(result.text ?? "");
 }
 
 function decodeAbstractInvertedIndex(index: Record<string, number[]>) {
@@ -117,7 +129,47 @@ async function fetchOpenAlexAbstract(source: Source) {
   };
 }
 
+async function fetchOpenAccessPdfText(source: Source) {
+  const pdfUrl = source.pdfUrl?.trim();
+  if (!pdfUrl || !/^https?:\/\//i.test(pdfUrl)) {
+    return null;
+  }
+
+  const response = await fetchWithTimeout(pdfUrl, {
+    headers: {
+      Accept: "application/pdf,text/plain;q=0.9,*/*;q=0.1",
+    },
+    next: { revalidate: 60 },
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType && !contentType.toLowerCase().includes("pdf")) {
+    return null;
+  }
+
+  const pdfBuffer = Buffer.from(await response.arrayBuffer());
+  const extractedText = await parsePdfText(pdfBuffer);
+  if (!extractedText || extractedText.length < 500) {
+    return null;
+  }
+
+  return clipText(extractedText, 12_000);
+}
+
 async function resolveAbstractContext(source: Source) {
+  const pdfText = await fetchOpenAccessPdfText(source);
+  if (pdfText) {
+    return {
+      source,
+      abstractText: pdfText,
+      abstractSource: "open-access-pdf",
+    };
+  }
+
   const embeddedAbstract = normalizeText(source.summary ?? "");
   if (embeddedAbstract.length >= 120) {
     return {

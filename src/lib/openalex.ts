@@ -34,6 +34,8 @@ interface OpenAlexWork {
   } | null;
   best_oa_location?: {
     is_oa?: boolean | null;
+    landing_page_url?: string | null;
+    pdf_url?: string | null;
   } | null;
   primary_location?: {
     is_oa?: boolean | null;
@@ -206,8 +208,13 @@ function mapOpenAlexWorkToSource(work: OpenAlexWork): Source {
       work.abstract_inverted_index && Object.keys(work.abstract_inverted_index).length > 0
         ? decodeAbstractInvertedIndex(work.abstract_inverted_index)
         : undefined,
+    pdfUrl: normalizeExternalUrl(
+      work.primary_location?.pdf_url,
+      work.best_oa_location?.pdf_url
+    ),
     externalUrl: normalizeExternalUrl(
       work.primary_location?.landing_page_url,
+      work.best_oa_location?.landing_page_url,
       work.primary_location?.pdf_url,
       work.id
     ),
@@ -216,7 +223,7 @@ function mapOpenAlexWorkToSource(work: OpenAlexWork): Source {
 
 export async function searchOpenAlexPage(
   query: string,
-  options: OpenAlexSearchOptions = {}
+  options: OpenAlexSearchOptions & { openAccessOnly?: boolean } = {}
 ): Promise<OpenAlexSearchPageResult> {
   const trimmedQuery = query.trim();
   if (!trimmedQuery) {
@@ -241,6 +248,9 @@ export async function searchOpenAlexPage(
   url.searchParams.set("search", trimmedQuery);
   url.searchParams.set("page", String(page));
   url.searchParams.set("per-page", String(perPage));
+  if (options.openAccessOnly) {
+    url.searchParams.set("filter", "open_access.is_oa:true");
+  }
   url.searchParams.set(
     "select",
     [
@@ -308,7 +318,7 @@ export async function searchOpenAlexPage(
 export async function searchOpenAlex(
   query: string,
   perPage = 25,
-  options: Omit<OpenAlexSearchOptions, "perPage"> = {}
+  options: Omit<OpenAlexSearchOptions, "perPage"> & { openAccessOnly?: boolean } = {}
 ): Promise<Source[]> {
   const result = await searchOpenAlexPage(query, {
     ...options,
