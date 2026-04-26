@@ -99,7 +99,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
-  const [selectedSource, setSelectedSource] = useState<Source | null>(null);
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const [citationStyle, setCitationStyle] = useState<CitationStyle>("MLA");
   const [citationText, setCitationText] = useState("");
   const [citationError, setCitationError] = useState<string | null>(null);
@@ -107,6 +107,10 @@ export default function Home() {
   const [copyStatus, setCopyStatus] = useState<"idle" | "success" | "error">("idle");
 
   const modeHint = useMemo(() => MODE_HELP[startMode], [startMode]);
+  const selectedSource = useMemo(
+    () => results.find((source) => source.id === selectedSourceId) ?? null,
+    [results, selectedSourceId]
+  );
   const selectedSummary = useMemo(
     () => (selectedSource ? buildMetadataSummary(selectedSource) : ""),
     [selectedSource]
@@ -132,7 +136,7 @@ export default function Home() {
       }
 
       setResults(payload.data);
-      setSelectedSource(null);
+      setSelectedSourceId(null);
       setCitationText("");
       setCitationError(null);
       setCopyStatus("idle");
@@ -271,6 +275,93 @@ export default function Home() {
         </form>
       </section>
 
+      {isLoading ? (
+        <LoadingState
+          title="Searching OpenAlex"
+          message="Finding relevant academic sources for your query."
+        />
+      ) : null}
+
+      {!isLoading && errorMessage ? (
+        <ErrorState
+          title="Search unavailable"
+          message={errorMessage}
+          actionLabel="Retry"
+          onAction={() => {
+            void runSearch();
+          }}
+        />
+      ) : null}
+
+      {!isLoading && !errorMessage && hasSearched && results.length === 0 ? (
+        <EmptyState
+          title="No sources found"
+          message="Try broader terms, fewer keywords, or a more general phrasing of your topic."
+          actionLabel="Search again"
+          onAction={() => {
+            void runSearch();
+          }}
+        />
+      ) : null}
+
+      {!isLoading && !errorMessage && results.length > 0 ? (
+        <section className="grid gap-4">
+          {results.map((source) => (
+            <article
+              key={source.id}
+              className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+            >
+              <h2 className="text-lg font-semibold text-slate-900">{source.title}</h2>
+              <dl className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
+                <div>
+                  <dt className="font-semibold text-slate-900">Authors</dt>
+                  <dd>{formatAuthors(source.authors)}</dd>
+                </div>
+                <div>
+                  <dt className="font-semibold text-slate-900">Publication date</dt>
+                  <dd>{formatPublicationDate(source.publicationDate)}</dd>
+                </div>
+                <div>
+                  <dt className="font-semibold text-slate-900">Citation count</dt>
+                  <dd>{source.citationCount}</dd>
+                </div>
+                <div>
+                  <dt className="font-semibold text-slate-900">External link</dt>
+                  <dd>
+                    {source.externalUrl ? (
+                      <a
+                        href={source.externalUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sky-700 underline underline-offset-2 hover:text-sky-900"
+                      >
+                        Open source
+                      </a>
+                    ) : (
+                      <span>Unavailable</span>
+                    )}
+                  </dd>
+                </div>
+              </dl>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedSourceId(source.id);
+                  setCitationStyle("MLA");
+                  setCitationText("");
+                  setCitationError(null);
+                  setCopyStatus("idle");
+                }}
+                className="mt-4 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+                aria-pressed={selectedSourceId === source.id}
+              >
+                Open details
+              </button>
+            </article>
+          ))}
+        </section>
+      ) : null}
+
       {selectedSource ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-2xl font-semibold text-slate-900">Source detail</h2>
@@ -381,92 +472,6 @@ export default function Home() {
               </div>
             ) : null}
           </div>
-        </section>
-      ) : null}
-
-      {isLoading ? (
-        <LoadingState
-          title="Searching OpenAlex"
-          message="Finding relevant academic sources for your query."
-        />
-      ) : null}
-
-      {!isLoading && errorMessage ? (
-        <ErrorState
-          title="Search unavailable"
-          message={errorMessage}
-          actionLabel="Retry"
-          onAction={() => {
-            void runSearch();
-          }}
-        />
-      ) : null}
-
-      {!isLoading && !errorMessage && hasSearched && results.length === 0 ? (
-        <EmptyState
-          title="No sources found"
-          message="Try broader terms, fewer keywords, or a more general phrasing of your topic."
-          actionLabel="Search again"
-          onAction={() => {
-            void runSearch();
-          }}
-        />
-      ) : null}
-
-      {!isLoading && !errorMessage && results.length > 0 ? (
-        <section className="grid gap-4">
-          {results.map((source) => (
-            <article
-              key={source.id}
-              className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
-            >
-              <h2 className="text-lg font-semibold text-slate-900">{source.title}</h2>
-              <dl className="mt-3 grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
-                <div>
-                  <dt className="font-semibold text-slate-900">Authors</dt>
-                  <dd>{formatAuthors(source.authors)}</dd>
-                </div>
-                <div>
-                  <dt className="font-semibold text-slate-900">Publication date</dt>
-                  <dd>{formatPublicationDate(source.publicationDate)}</dd>
-                </div>
-                <div>
-                  <dt className="font-semibold text-slate-900">Citation count</dt>
-                  <dd>{source.citationCount}</dd>
-                </div>
-                <div>
-                  <dt className="font-semibold text-slate-900">External link</dt>
-                  <dd>
-                    {source.externalUrl ? (
-                      <a
-                        href={source.externalUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sky-700 underline underline-offset-2 hover:text-sky-900"
-                      >
-                        Open source
-                      </a>
-                    ) : (
-                      <span>Unavailable</span>
-                    )}
-                  </dd>
-                </div>
-              </dl>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedSource(source);
-                  setCitationStyle("MLA");
-                  setCitationText("");
-                  setCitationError(null);
-                  setCopyStatus("idle");
-                }}
-                className="mt-4 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700"
-              >
-                Open details
-              </button>
-            </article>
-          ))}
         </section>
       ) : null}
     </main>
