@@ -105,12 +105,14 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
-  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
+  const [expandedSourceIds, setExpandedSourceIds] = useState<string[]>([]);
   const [citationStyle, setCitationStyle] = useState<CitationStyle>("MLA");
-  const [citationText, setCitationText] = useState("");
-  const [citationError, setCitationError] = useState<string | null>(null);
-  const [isCitationLoading, setIsCitationLoading] = useState(false);
-  const [copyStatus, setCopyStatus] = useState<"idle" | "success" | "error">("idle");
+  const [citationTextsBySource, setCitationTextsBySource] = useState<Record<string, string>>({});
+  const [citationErrorsBySource, setCitationErrorsBySource] = useState<Record<string, string>>({});
+  const [citationLoadingSourceId, setCitationLoadingSourceId] = useState<string | null>(null);
+  const [copyStatusBySource, setCopyStatusBySource] = useState<
+    Record<string, "idle" | "success" | "error">
+  >({});
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [batchCitations, setBatchCitations] = useState<BatchCitationItem[]>([]);
   const [isBatchCitationLoading, setIsBatchCitationLoading] = useState(false);
@@ -120,10 +122,6 @@ export default function Home() {
   );
 
   const modeHint = useMemo(() => MODE_HELP[startMode], [startMode]);
-  const selectedSource = useMemo(
-    () => results.find((source) => source.id === selectedSourceId) ?? null,
-    [results, selectedSourceId]
-  );
   const selectedSources = useMemo(
     () => results.filter((source) => selectedSourceIds.includes(source.id)),
     [results, selectedSourceIds]
@@ -149,11 +147,12 @@ export default function Home() {
       }
 
       setResults(payload.data);
-      setSelectedSourceId(null);
+  setExpandedSourceIds([]);
       setSelectedSourceIds([]);
-      setCitationText("");
-      setCitationError(null);
-      setCopyStatus("idle");
+  setCitationTextsBySource({});
+  setCitationErrorsBySource({});
+  setCopyStatusBySource({});
+  setCitationLoadingSourceId(null);
       setBatchCitations([]);
       setBatchCitationError(null);
       setBatchCopyStatus("idle");
@@ -174,14 +173,10 @@ export default function Home() {
     await runSearch();
   }
 
-  async function generateCitation() {
-    if (!selectedSource) {
-      return;
-    }
-
-    setIsCitationLoading(true);
-    setCitationError(null);
-    setCopyStatus("idle");
+  async function generateCitationForSource(source: Source) {
+    setCitationLoadingSourceId(source.id);
+    setCitationErrorsBySource((current) => ({ ...current, [source.id]: "" }));
+    setCopyStatusBySource((current) => ({ ...current, [source.id]: "idle" }));
 
     try {
       const response = await fetch("/api/citation", {
@@ -190,7 +185,7 @@ export default function Home() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          source: selectedSource,
+          source,
           style: citationStyle,
         }),
       });
@@ -200,28 +195,42 @@ export default function Home() {
         throw new Error(payload.error?.message || "Citation generation failed.");
       }
 
-      setCitationText(payload.data.citationText);
+      setCitationTextsBySource((current) => ({
+        ...current,
+        [source.id]: payload.data?.citationText ?? "",
+      }));
     } catch (error) {
-      setCitationText("");
-      setCitationError(
-        error instanceof Error ? error.message : "Citation generation failed. Please retry."
-      );
+      setCitationTextsBySource((current) => ({ ...current, [source.id]: "" }));
+      setCitationErrorsBySource((current) => ({
+        ...current,
+        [source.id]:
+          error instanceof Error ? error.message : "Citation generation failed. Please retry.",
+      }));
     } finally {
-      setIsCitationLoading(false);
+      setCitationLoadingSourceId(null);
     }
   }
 
-  async function copyCitation() {
+  async function copyCitationForSource(sourceId: string) {
+    const citationText = citationTextsBySource[sourceId] ?? "";
     if (!citationText) {
       return;
     }
 
     try {
       await navigator.clipboard.writeText(citationText);
-      setCopyStatus("success");
+      setCopyStatusBySource((current) => ({ ...current, [sourceId]: "success" }));
     } catch {
-      setCopyStatus("error");
+      setCopyStatusBySource((current) => ({ ...current, [sourceId]: "error" }));
     }
+  }
+
+  function toggleSourceDetails(sourceId: string) {
+    setExpandedSourceIds((current) =>
+      current.includes(sourceId)
+        ? current.filter((id) => id !== sourceId)
+        : [...current, sourceId]
+    );
   }
 
   function toggleSourceSelection(sourceId: string) {
@@ -270,7 +279,10 @@ export default function Home() {
       });
 
       const items = await Promise.all(citationPromises);
-      setBatchCitations(items);
+      const sortedItems = [...items].sort((a, b) =>
+        a.citationText.localeCompare(b.citationText, undefined, { sensitivity: "base" })
+      );
+      setBatchCitations(sortedItems);
     } catch (error) {
       setBatchCitations([]);
       setBatchCitationError(
@@ -288,9 +300,7 @@ export default function Home() {
       return;
     }
 
-    const content = batchCitations
-      .map((item, index) => `${index + 1}. ${item.citationText}`)
-      .join("\n\n");
+    const content = batchCitations.map((item) => item.citationText).join("\n\n");
 
     try {
       await navigator.clipboard.writeText(content);
@@ -439,16 +449,15 @@ export default function Home() {
             {batchCitations.length > 0 ? (
               <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                  Citation list ({citationStyle})
+                  Alphabetical citation list ({citationStyle})
                 </p>
-                <ol className="mt-2 list-decimal space-y-2 pl-5 text-sm text-slate-800">
+                <div className="mt-2 space-y-3 text-sm text-slate-800">
                   {batchCitations.map((item) => (
-                    <li key={item.sourceId}>
-                      <p className="font-semibold text-slate-900">{item.sourceTitle}</p>
+                    <div key={item.sourceId}>
                       <p>{item.citationText}</p>
-                    </li>
+                    </div>
                   ))}
-                </ol>
+                </div>
                 <button
                   type="button"
                   onClick={() => {
@@ -519,19 +528,15 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => {
-                  setSelectedSourceId((current) => (current === source.id ? null : source.id));
-                  setCitationStyle("MLA");
-                  setCitationText("");
-                  setCitationError(null);
-                  setCopyStatus("idle");
+                  toggleSourceDetails(source.id);
                 }}
                 className="mt-4 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700"
-                aria-pressed={selectedSourceId === source.id}
+                aria-pressed={expandedSourceIds.includes(source.id)}
               >
-                {selectedSourceId === source.id ? "Close details" : "Open details"}
+                {expandedSourceIds.includes(source.id) ? "Close details" : "Open details"}
               </button>
 
-              {selectedSourceId === source.id ? (
+              {expandedSourceIds.includes(source.id) ? (
                 <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <h3 className="text-base font-semibold text-slate-900">Source detail</h3>
                   <p className="mt-2 text-sm text-slate-700">{buildMetadataSummary(source)}</p>
@@ -560,22 +565,22 @@ export default function Home() {
                       <button
                         type="button"
                         onClick={() => {
-                          void generateCitation();
+                          void generateCitationForSource(source);
                         }}
-                        disabled={isCitationLoading}
+                        disabled={citationLoadingSourceId === source.id}
                         className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
                       >
-                        {isCitationLoading ? "Generating..." : "Generate citation"}
+                        {citationLoadingSourceId === source.id ? "Generating..." : "Generate citation"}
                       </button>
                     </div>
 
-                    {citationError ? (
+                    {citationErrorsBySource[source.id] ? (
                       <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-                        <p>{citationError}</p>
+                        <p>{citationErrorsBySource[source.id]}</p>
                         <button
                           type="button"
                           onClick={() => {
-                            void generateCitation();
+                            void generateCitationForSource(source);
                           }}
                           className="mt-2 rounded bg-rose-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-600"
                         >
@@ -584,25 +589,25 @@ export default function Home() {
                       </div>
                     ) : null}
 
-                    {citationText ? (
+                    {citationTextsBySource[source.id] ? (
                       <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
                         <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">
                           Style: {citationStyle}
                         </p>
-                        <p className="mt-2 text-sm text-slate-800">{citationText}</p>
+                        <p className="mt-2 text-sm text-slate-800">{citationTextsBySource[source.id]}</p>
                         <button
                           type="button"
                           onClick={() => {
-                            void copyCitation();
+                            void copyCitationForSource(source.id);
                           }}
                           className="mt-3 rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700"
                         >
                           Copy citation
                         </button>
-                        {copyStatus === "success" ? (
+                        {copyStatusBySource[source.id] === "success" ? (
                           <p className="mt-2 text-xs text-emerald-700">Copied to clipboard.</p>
                         ) : null}
-                        {copyStatus === "error" ? (
+                        {copyStatusBySource[source.id] === "error" ? (
                           <p className="mt-2 text-xs text-rose-700">Copy failed. Please copy manually.</p>
                         ) : null}
                       </div>
