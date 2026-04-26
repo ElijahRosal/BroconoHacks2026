@@ -29,11 +29,28 @@ interface OpenAlexWorkResponse {
   abstract_inverted_index?: Record<string, number[]> | null;
 }
 
+interface CrossrefWorkResponse {
+  message?: {
+    title?: string[] | null;
+    abstract?: string | null;
+  } | null;
+}
+
 interface PdfParseResult {
   text?: string;
 }
 
 const SUMMARY_TIMEOUT_MS = 15_000;
+const MAX_PAPER_TEXT_LENGTH = 12_000;
+const MAX_ABSTRACT_TEXT_LENGTH = 8_000;
+const ABSTRACT_META_NAMES = [
+  "citation_abstract",
+  "dc.description",
+  "dcterms.abstract",
+  "description",
+  "og:description",
+  "twitter:description",
+];
 
 function normalizeText(value: string) {
   return value.replace(/\s+/g, " ").trim();
@@ -46,6 +63,28 @@ function clipText(value: string, maxLength: number) {
   }
 
   return `${normalized.slice(0, maxLength - 3)}...`;
+}
+
+function decodeHtmlEntities(value: string) {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) => {
+      const parsed = Number.parseInt(code, 16);
+      return Number.isFinite(parsed) ? String.fromCodePoint(parsed) : "";
+    })
+    .replace(/&#(\d+);/g, (_, code: string) => {
+      const parsed = Number.parseInt(code, 10);
+      return Number.isFinite(parsed) ? String.fromCodePoint(parsed) : "";
+    });
+}
+
+function stripHtml(value: string) {
+  return normalizeText(decodeHtmlEntities(value.replace(/<[^>]+>/g, " ")));
 }
 
 async function parsePdfText(pdfBuffer: Buffer) {
@@ -75,6 +114,37 @@ function decodeAbstractInvertedIndex(index: Record<string, number[]>) {
   );
 }
 
+function isLikelyRealAbstract(text: string) {
+  const normalized = normalizeText(text);
+  if (normalized.length < 120) {
+    return false;
+  }
+
+  const lower = normalized.toLowerCase();
+  return !(
+    lower.startsWith("this source appears to discuss ") ||
+    lower.includes("use the external link and abstract details to verify") ||
+    lower.includes("metadata-only summary was returned")
+  );
+}
+
+function extractDoi(source: Source) {
+  const candidates = [source.externalUrl, source.pdfUrl, source.id];
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+
+    const match = candidate.match(/10\.\d{4,9}\/[-._;()/:a-z0-9]+/i);
+    if (match) {
+      return match[0];
+    }
+  }
+
+  return null;
+}
+
 function extractOpenAlexWorkId(source: Source) {
   const candidates = [source.id, source.externalUrl];
 
@@ -90,6 +160,41 @@ function extractOpenAlexWorkId(source: Source) {
   }
 
   return null;
+}
+
+function extractMetaContent(html: string, targetName: string) {
+  const metaTagPattern = new RegExp(
+    `<meta[^>]+(?:name|property)=["']${targetName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["'][^>]+content=["']([\\s\\S]*?)["'][^>]*>`,
+    "i"
+  );
+  const reversedMetaTagPattern = new RegExp(
+    `<meta[^>]+content=["']([\\s\\S]*?)["'][^>]+(?:name|property)=["']${targetName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["'][^>]*>`,
+    "i"
+  );
+
+  const match = html.match(metaTagPattern) ?? html.match(reversedMetaTagPattern);
+  return match?.[1] ? stripHtml(match[1]) : "";
+}
+
+function extractHtmlAbstractSection(html: string) {
+  const sectionPatterns = [
+    /<(section|div)[^>]+(?:id|class)=["'][^"']*abstract[^"']*["'][^>]*>([\s\S]*?)<\/\1>/i,
+    /<h\d[^>]*>\s*abstract\s*<\/h\d>\s*([\s\S]{0,6000}?)(?:<h\d|<\/article>|<\/main>|<\/section>)/i,
+  ];
+
+  for (const pattern of sectionPatterns) {
+    const match = html.match(pattern);
+    if (!match) {
+      continue;
+    }
+
+    const candidate = stripHtml(match[2] ?? match[1] ?? "");
+    if (isLikelyRealAbstract(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "";
 }
 
 async function fetchOpenAlexAbstract(source: Source) {
@@ -129,6 +234,96 @@ async function fetchOpenAlexAbstract(source: Source) {
   };
 }
 
+async function fetchAbstractFromLandingPage(source: Source) {
+  const externalUrl = source.externalUrl?.trim();
+  if (!externalUrl || !/^https?:\/\//i.test(externalUrl)) {
+    return null;
+  }
+
+  const response = await fetchWithTimeout(externalUrl, {
+    headers: {
+      Accept: "text/html,application/pdf;q=0.9,text/plain;q=0.8,*/*;q=0.1",
+    },
+    next: { revalidate: 60 },
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+  if (contentType.includes("pdf")) {
+    const pdfBuffer = Buffer.from(await response.arrayBuffer());
+    const extractedText = await parsePdfText(pdfBuffer);
+    if (!extractedText || extractedText.length < 500) {
+      return null;
+    }
+
+    return {
+      abstractText: clipText(extractedText, MAX_PAPER_TEXT_LENGTH),
+      abstractSource: "landing-page-pdf",
+      sourceType: "paper-text" as const,
+    };
+  }
+
+  if (!contentType.includes("html")) {
+    return null;
+  }
+
+  const html = await response.text();
+  for (const metaName of ABSTRACT_META_NAMES) {
+    const content = extractMetaContent(html, metaName);
+    if (isLikelyRealAbstract(content)) {
+      return {
+        abstractText: clipText(content, MAX_ABSTRACT_TEXT_LENGTH),
+        abstractSource: "landing-page-meta",
+        sourceType: "abstract" as const,
+      };
+    }
+  }
+
+  const sectionText = extractHtmlAbstractSection(html);
+  if (!sectionText) {
+    return null;
+  }
+
+  return {
+    abstractText: clipText(sectionText, MAX_ABSTRACT_TEXT_LENGTH),
+    abstractSource: "landing-page-section",
+    sourceType: "abstract" as const,
+  };
+}
+
+async function fetchCrossrefAbstract(source: Source) {
+  const doi = extractDoi(source);
+  if (!doi) {
+    return null;
+  }
+
+  const url = new URL(`https://api.crossref.org/works/${encodeURIComponent(doi)}`);
+  const response = await fetchWithTimeout(url.toString(), {
+    headers: {
+      Accept: "application/json",
+    },
+    next: { revalidate: 300 },
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const payload = (await response.json()) as CrossrefWorkResponse;
+  const abstractText = stripHtml(payload.message?.abstract ?? "");
+  if (!isLikelyRealAbstract(abstractText)) {
+    return null;
+  }
+
+  return {
+    abstractText: clipText(abstractText, MAX_ABSTRACT_TEXT_LENGTH),
+    title: payload.message?.title?.[0]?.trim() || source.title,
+  };
+}
+
 async function fetchOpenAccessPdfText(source: Source) {
   const pdfUrl = source.pdfUrl?.trim();
   if (!pdfUrl || !/^https?:\/\//i.test(pdfUrl)) {
@@ -157,7 +352,7 @@ async function fetchOpenAccessPdfText(source: Source) {
     return null;
   }
 
-  return clipText(extractedText, 12_000);
+  return clipText(extractedText, MAX_PAPER_TEXT_LENGTH);
 }
 
 async function resolveAbstractContext(source: Source) {
@@ -167,15 +362,17 @@ async function resolveAbstractContext(source: Source) {
       source,
       abstractText: pdfText,
       abstractSource: "open-access-pdf",
+      sourceType: "paper-text" as const,
     };
   }
 
   const embeddedAbstract = normalizeText(source.summary ?? "");
-  if (embeddedAbstract.length >= 120) {
+  if (isLikelyRealAbstract(embeddedAbstract)) {
     return {
       source,
-      abstractText: clipText(embeddedAbstract, 8_000),
+      abstractText: clipText(embeddedAbstract, MAX_ABSTRACT_TEXT_LENGTH),
       abstractSource: "search-result",
+      sourceType: "abstract" as const,
     };
   }
 
@@ -186,8 +383,32 @@ async function resolveAbstractContext(source: Source) {
         ...source,
         title: fetched.title,
       },
-      abstractText: clipText(fetched.abstractText, 8_000),
+      abstractText: clipText(fetched.abstractText, MAX_ABSTRACT_TEXT_LENGTH),
       abstractSource: "openalex-work",
+      sourceType: "abstract" as const,
+    };
+  }
+
+  const landingPageAbstract = await fetchAbstractFromLandingPage(source);
+  if (landingPageAbstract) {
+    return {
+      source,
+      abstractText: landingPageAbstract.abstractText,
+      abstractSource: landingPageAbstract.abstractSource,
+      sourceType: landingPageAbstract.sourceType,
+    };
+  }
+
+  const crossrefAbstract = await fetchCrossrefAbstract(source);
+  if (crossrefAbstract) {
+    return {
+      source: {
+        ...source,
+        title: crossrefAbstract.title,
+      },
+      abstractText: crossrefAbstract.abstractText,
+      abstractSource: "crossref",
+      sourceType: "abstract" as const,
     };
   }
 
@@ -205,23 +426,28 @@ function buildFallbackSummary(source: Source) {
   ].join(" ");
 }
 
-function buildSummaryPrompt(source: Source, abstractText: string) {
+function buildSummaryPrompt(source: Source, abstractText: string, sourceType: "abstract" | "paper-text") {
   const authorText = source.authors.length > 0 ? source.authors.join(", ") : "Unknown authors";
+  const contentLabel = sourceType === "paper-text" ? "Paper text excerpt" : "Abstract text";
+  const contentInstruction =
+    sourceType === "paper-text"
+      ? "Summarize the actual paper content excerpt provided below."
+      : "Summarize the actual paper abstract content provided below.";
 
   return [
     "You are writing a concise academic source summary for students.",
     "Write 4 to 6 sentences.",
-    "Summarize the actual paper abstract content provided below.",
+    contentInstruction,
     "Keep it factual and neutral. Do not invent methods, results, or statistics.",
     "Cover: research objective, method/design if present, major findings, and limitations/uncertainties.",
-    "If the abstract omits a detail, explicitly say it is not stated.",
+    "If the provided text omits a detail, explicitly say it is not stated.",
     "",
     `Title: ${source.title}`,
     `Authors: ${authorText}`,
     `Publication date: ${source.publicationDate || "Unknown"}`,
     `Citation count: ${source.citationCount}`,
     `URL: ${source.externalUrl || "Unknown"}`,
-    `Abstract text: ${abstractText}`,
+    `${contentLabel}: ${abstractText}`,
   ].join("\n");
 }
 
@@ -330,13 +556,13 @@ async function generateWithGoogle(prompt: string, apiKey: string, model: string,
   return text;
 }
 
-async function generateAiSummary(source: Source, abstractText: string) {
+async function generateAiSummary(source: Source, abstractText: string, sourceType: "abstract" | "paper-text") {
   const { apiKey, baseUrl, model } = getOptionalAiConfig();
   if (!apiKey) {
     throw new Error("AI_API_KEY is not configured.");
   }
 
-  const prompt = buildSummaryPrompt(source, abstractText);
+  const prompt = buildSummaryPrompt(source, abstractText, sourceType);
 
   if (apiKey.startsWith("AIza")) {
     return generateWithGoogle(prompt, apiKey, model, baseUrl);
@@ -373,7 +599,7 @@ export async function POST(request: Request) {
       });
     }
 
-    const aiSummary = await generateAiSummary(context.source, context.abstractText);
+    const aiSummary = await generateAiSummary(context.source, context.abstractText, context.sourceType);
     return apiSuccess({
       summary: clipText(aiSummary, 1200),
       provider: "ai",
