@@ -17,6 +17,8 @@ export interface ResearchPlanResponse {
   suggestedQueries: string[];
   keywords: string[];
   synonyms: string[];
+  aiUsed?: boolean;
+  warning?: string;
 }
 
 export interface ClaimMatch {

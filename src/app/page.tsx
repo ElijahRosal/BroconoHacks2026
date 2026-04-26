@@ -58,6 +58,8 @@ interface ResearchPlanResponseWrapper {
     suggestedQueries: string[];
     keywords: string[];
     synonyms: string[];
+    aiUsed?: boolean;
+    warning?: string;
   };
   error?: {
     code: string;
@@ -143,6 +145,8 @@ interface ResearchPlanState {
   suggestedQueries: string[];
   keywords: string[];
   synonyms: string[];
+  aiUsed?: boolean;
+  warning?: string;
 }
 
 const MODE_HELP: Record<StartMode, string> = {
@@ -488,7 +492,8 @@ export default function Home() {
   const performSearch = useCallback(async (
     searchQuery: string,
     page = 1,
-    limit = resultsLimit
+    limit = resultsLimit,
+    options?: { preserveResearchPlan?: boolean }
   ) => {
     const trimmedQuery = searchQuery.trim();
     if (!trimmedQuery) {
@@ -499,6 +504,7 @@ export default function Home() {
     searchAbortRef.current?.abort();
     const controller = new AbortController();
     searchAbortRef.current = controller;
+    const preserveResearchPlan = options?.preserveResearchPlan ?? false;
 
     const signature = `${startMode}::${trimmedQuery}`;
     lastSubmittedSignatureRef.current = signature;
@@ -506,7 +512,10 @@ export default function Home() {
     setIsLoading(true);
     setErrorMessage(null);
     setPlanErrorMessage(null);
-    setResearchPlan(null);
+    if (!preserveResearchPlan) {
+      setResearchPlan(null);
+      setPendingResearchPlanQuery("");
+    }
     setHasSearched(true);
     setResultsPage(page);
     setResultsLimit(limit);
@@ -541,6 +550,10 @@ export default function Home() {
       setBatchCitations([]);
       setBatchCitationError(null);
       setBatchCopyStatus("idle");
+
+      if (!preserveResearchPlan) {
+        setPendingResearchPlanQuery("");
+      }
     } catch (error) {
       if (controller.signal.aborted) {
         return;
@@ -720,8 +733,13 @@ export default function Home() {
         suggestedQueries: payload.data.suggestedQueries,
         keywords: payload.data.keywords,
         synonyms: payload.data.synonyms,
+        aiUsed: payload.data.aiUsed,
+        warning: payload.data.warning,
       });
       setPendingResearchPlanQuery(trimmedQuery);
+      await performSearch(payload.data.refinedQuestion, 1, resultsLimit, {
+        preserveResearchPlan: true,
+      });
     } catch (error) {
       if (controller.signal.aborted) {
         return;
@@ -1155,8 +1173,22 @@ export default function Home() {
             <div>
               <h2 className="text-lg font-semibold text-slate-900">Research plan</h2>
               <p className="mt-1 text-sm text-slate-700">
-                Review the refined question and pick a suggested search query, or continue with the original query.
+                Review the refined search query and pick a suggested search query, or continue with the original query.
               </p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span
+                  className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                    researchPlan.aiUsed
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-amber-100 text-amber-800"
+                  }`}
+                >
+                  {researchPlan.aiUsed ? "AI-enhanced" : "Fallback plan"}
+                </span>
+                {researchPlan.warning ? (
+                  <span className="text-xs text-amber-800">{researchPlan.warning}</span>
+                ) : null}
+              </div>
             </div>
             <button
               type="button"
@@ -1172,7 +1204,7 @@ export default function Home() {
           <div className="mt-4 grid gap-4 lg:grid-cols-3">
             <div className="rounded-xl border border-sky-200 bg-white p-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">
-                Refined question
+                Refined search query
               </p>
               <p className="mt-2 text-sm text-slate-800">{researchPlan.refinedQuestion}</p>
             </div>
