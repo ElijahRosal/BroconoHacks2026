@@ -424,7 +424,12 @@ export default function Home() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setSelectedSourceIds([])}
+                  onClick={() => {
+                    setSelectedSourceIds([]);
+                    setBatchCitations([]);
+                    setBatchCitationError(null);
+                    setBatchCopyStatus("idle");
+                  }}
                   className="rounded border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-100"
                 >
                   Clear
