@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { signIn, signOut, useSession } from "next-auth/react";
 
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/async-state";
 import {
@@ -10,7 +11,13 @@ import {
   type CitationStyle,
   type StartMode,
 } from "@/lib/constants";
-import type { Source } from "@/types/domain";
+import {
+  appendGuestCitationHistory,
+  clearGuestCitationHistory,
+  createGuestCitationHistoryItem,
+  readGuestCitationHistory,
+} from "@/lib/guest-citation-history";
+import type { GuestCitationHistoryItem, Source } from "@/types/domain";
 
 interface SearchResponse {
   ok: boolean;
@@ -26,6 +33,17 @@ interface CitationResponse {
   data?: {
     citationText: string;
     style: CitationStyle;
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
+interface SignUpResponse {
+  ok: boolean;
+  data?: {
+    message: string;
   };
   error?: {
     code: string;
@@ -67,6 +85,15 @@ function formatAuthors(authors: string[]) {
   return authors.join(", ");
 }
 
+function formatHistoryTimestamp(isoValue: string) {
+  const parsed = new Date(isoValue);
+  if (Number.isNaN(parsed.getTime())) {
+    return isoValue;
+  }
+
+  return parsed.toLocaleString();
+}
+
 function getKeywordsFromTitle(title: string) {
   const stopWords = new Set([
     "the",
@@ -99,6 +126,7 @@ function buildMetadataSummary(source: Source) {
 }
 
 export default function Home() {
+  const { data: session, status: sessionStatus } = useSession();
   const [query, setQuery] = useState("");
   const [startMode, setStartMode] = useState<StartMode>(START_MODE_VALUES[0]);
   const [results, setResults] = useState<Source[]>([]);
@@ -120,12 +148,26 @@ export default function Home() {
   const [batchCopyStatus, setBatchCopyStatus] = useState<"idle" | "success" | "error">(
     "idle"
   );
+  const [guestCitationHistory, setGuestCitationHistory] = useState<GuestCitationHistoryItem[]>([]);
+  const [signUpEmail, setSignUpEmail] = useState("");
+  const [signUpPassword, setSignUpPassword] = useState("");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isSigningUp, setIsSigningUp] = useState(false);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   const modeHint = useMemo(() => MODE_HELP[startMode], [startMode]);
   const selectedSources = useMemo(
     () => results.filter((source) => selectedSourceIds.includes(source.id)),
     [results, selectedSourceIds]
   );
+
+  useEffect(() => {
+    setGuestCitationHistory(readGuestCitationHistory());
+  }, []);
 
   async function runSearch() {
     const trimmedQuery = query.trim();
@@ -199,6 +241,15 @@ export default function Home() {
         ...current,
         [source.id]: payload.data?.citationText ?? "",
       }));
+
+      const item = createGuestCitationHistoryItem({
+        sourceId: source.id,
+        sourceTitle: source.title,
+        style: payload.data.style,
+        citationText: payload.data.citationText,
+      });
+
+      setGuestCitationHistory(appendGuestCitationHistory(item));
     } catch (error) {
       setCitationTextsBySource((current) => ({ ...current, [source.id]: "" }));
       setCitationErrorsBySource((current) => ({
@@ -310,8 +361,170 @@ export default function Home() {
     }
   }
 
+  function clearGuestCitationHistoryList() {
+    clearGuestCitationHistory();
+    setGuestCitationHistory([]);
+  }
+
+  async function onSignUpSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    setIsSigningUp(true);
+    setAuthError(null);
+    setAuthMessage(null);
+
+    try {
+      const response = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: signUpEmail,
+          password: signUpPassword,
+        }),
+      });
+
+      const payload = (await response.json()) as SignUpResponse;
+      if (!response.ok || !payload.ok || !payload.data) {
+        throw new Error(payload.error?.message || "Sign up failed.");
+      }
+
+      setAuthMessage(payload.data.message);
+      setSignUpPassword("");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Unable to sign up right now.");
+    } finally {
+      setIsSigningUp(false);
+    }
+  }
+
+  async function onLoginSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    setIsLoggingIn(true);
+    setAuthError(null);
+    setAuthMessage(null);
+
+    try {
+      const result = await signIn("credentials", {
+        email: loginEmail,
+        password: loginPassword,
+        redirect: false,
+      });
+
+      if (!result || result.error) {
+        throw new Error("Login failed. Ensure your email is verified and credentials are correct.");
+      }
+
+      setAuthMessage("Logged in successfully.");
+      setLoginPassword("");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Unable to log in right now.");
+    } finally {
+      setIsLoggingIn(false);
+    }
+  }
+
+  async function onLogout() {
+    setIsLoggingOut(true);
+    setAuthError(null);
+    setAuthMessage(null);
+
+    try {
+      await signOut({ redirect: false });
+      setAuthMessage("Logged out successfully.");
+    } catch {
+      setAuthError("Unable to log out right now.");
+    } finally {
+      setIsLoggingOut(false);
+    }
+  }
+
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-8 px-4 py-10 sm:px-6 lg:px-8">
+      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-xl font-semibold text-slate-900">Account</h2>
+
+        {sessionStatus === "authenticated" ? (
+          <div className="mt-4 space-y-3">
+            <p className="text-sm text-slate-700">
+              Signed in as <span className="font-semibold text-slate-900">{session.user.email}</span>
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                void onLogout();
+              }}
+              disabled={isLoggingOut}
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {isLoggingOut ? "Logging out..." : "Log out"}
+            </button>
+          </div>
+        ) : (
+          <div className="mt-4 grid gap-6 md:grid-cols-2">
+            <form className="space-y-3" onSubmit={onSignUpSubmit}>
+              <h3 className="text-sm font-semibold text-slate-900">Sign up</h3>
+              <input
+                type="email"
+                value={signUpEmail}
+                onChange={(event) => setSignUpEmail(event.target.value)}
+                placeholder="Email"
+                required
+                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-900 outline-none ring-sky-500 transition focus:ring-2"
+              />
+              <input
+                type="password"
+                value={signUpPassword}
+                onChange={(event) => setSignUpPassword(event.target.value)}
+                placeholder="Password (min 8 characters)"
+                required
+                minLength={8}
+                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-900 outline-none ring-sky-500 transition focus:ring-2"
+              />
+              <button
+                type="submit"
+                disabled={isSigningUp}
+                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {isSigningUp ? "Creating account..." : "Create account"}
+              </button>
+            </form>
+
+            <form className="space-y-3" onSubmit={onLoginSubmit}>
+              <h3 className="text-sm font-semibold text-slate-900">Log in</h3>
+              <input
+                type="email"
+                value={loginEmail}
+                onChange={(event) => setLoginEmail(event.target.value)}
+                placeholder="Email"
+                required
+                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-900 outline-none ring-sky-500 transition focus:ring-2"
+              />
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={(event) => setLoginPassword(event.target.value)}
+                placeholder="Password"
+                required
+                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm text-slate-900 outline-none ring-sky-500 transition focus:ring-2"
+              />
+              <button
+                type="submit"
+                disabled={isLoggingIn}
+                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {isLoggingIn ? "Logging in..." : "Log in"}
+              </button>
+            </form>
+          </div>
+        )}
+
+        {authMessage ? <p className="mt-4 text-sm text-emerald-700">{authMessage}</p> : null}
+        {authError ? <p className="mt-4 text-sm text-rose-700">{authError}</p> : null}
+      </section>
+
       <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h1 className="text-3xl font-semibold tracking-tight text-slate-900 sm:text-4xl">
           AI Citation Finder &amp; Generator
@@ -376,6 +589,44 @@ export default function Home() {
             </div>
           </div>
         </form>
+      </section>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Guest citation history</h2>
+            <p className="mt-1 text-sm text-slate-600">
+              Stored locally on this device using browser local storage.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={clearGuestCitationHistoryList}
+            disabled={guestCitationHistory.length === 0}
+            className="rounded border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Clear history
+          </button>
+        </div>
+
+        {guestCitationHistory.length === 0 ? (
+          <p className="mt-4 text-sm text-slate-600">
+            No guest citation history yet. Generated citations will appear here.
+          </p>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {guestCitationHistory.map((item) => (
+              <article key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-700">
+                  <span className="rounded bg-white px-2 py-1">{item.style}</span>
+                  <span>{formatHistoryTimestamp(item.createdAt)}</span>
+                </div>
+                <p className="mt-2 text-sm font-semibold text-slate-900">{item.sourceTitle}</p>
+                <p className="mt-1 text-sm text-slate-800">{item.citationText}</p>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
 
       {isLoading ? (
