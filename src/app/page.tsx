@@ -681,9 +681,6 @@ export default function Home() {
       setCitationErrorsBySource({});
       setCopyStatusBySource({});
       setCitationLoadingSourceId(null);
-      setSummariesBySource({});
-      setSummaryLoadingBySource({});
-      setSummaryErrorsBySource({});
       setBatchCitations([]);
       setBatchCitationError(null);
       setBatchCopyStatus("idle");
