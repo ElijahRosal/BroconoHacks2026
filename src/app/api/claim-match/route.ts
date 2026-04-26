@@ -488,8 +488,8 @@ async function buildClaimPlan(claim: string) {
 
   if (aiPlan?.refinedQuestion && refinedQuestion !== aiPlan.refinedQuestion) {
     warning = warning
-      ? `${warning} Refined claim question was adjusted to stay closer to the original claim.`
-      : "Refined claim question was adjusted to stay closer to the original claim.";
+      ? `${warning} Claim adjusted.`
+      : "Claim adjusted.";
   }
 
   return {

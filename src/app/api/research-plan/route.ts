@@ -719,8 +719,8 @@ async function buildResearchPlan(query: string, openAccessOnly = false): Promise
 
   if (!sameQueryCandidate(selectedRefinedQuestion, aiPlan?.refinedQuestion ?? "")) {
     warning = warning
-      ? `${warning} Refined query was adjusted to stay closer to the original topic.`
-      : "Refined query was adjusted to stay closer to the original topic.";
+      ? `${warning} Query adjusted.`
+      : "Query adjusted.";
   }
 
   return {
