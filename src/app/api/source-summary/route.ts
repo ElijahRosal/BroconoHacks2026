@@ -24,6 +24,11 @@ interface GoogleGenerateContentResponse {
   }>;
 }
 
+interface OpenAlexWorkResponse {
+  title?: string | null;
+  abstract_inverted_index?: Record<string, number[]> | null;
+}
+
 const SUMMARY_TIMEOUT_MS = 15_000;
 
 function normalizeText(value: string) {
@@ -39,6 +44,104 @@ function clipText(value: string, maxLength: number) {
   return `${normalized.slice(0, maxLength - 3)}...`;
 }
 
+function decodeAbstractInvertedIndex(index: Record<string, number[]>) {
+  const positions = new Map<number, string>();
+
+  for (const [token, tokenPositions] of Object.entries(index)) {
+    for (const position of tokenPositions) {
+      if (Number.isInteger(position) && position >= 0 && !positions.has(position)) {
+        positions.set(position, token);
+      }
+    }
+  }
+
+  return normalizeText(
+    Array.from(positions.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([, token]) => token)
+      .join(" ")
+  );
+}
+
+function extractOpenAlexWorkId(source: Source) {
+  const candidates = [source.id, source.externalUrl];
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+
+    const fromPath = candidate.match(/(?:openalex\.org\/)?(W\d{3,})/i)?.[1];
+    if (fromPath) {
+      return fromPath.toUpperCase();
+    }
+  }
+
+  return null;
+}
+
+async function fetchOpenAlexAbstract(source: Source) {
+  const workId = extractOpenAlexWorkId(source);
+  if (!workId) {
+    return null;
+  }
+
+  const url = new URL(`https://api.openalex.org/works/${encodeURIComponent(workId)}`);
+  url.searchParams.set("select", "title,abstract_inverted_index");
+
+  const response = await fetchWithTimeout(url.toString(), {
+    headers: {
+      Accept: "application/json",
+    },
+    next: { revalidate: 60 },
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const payload = (await response.json()) as OpenAlexWorkResponse;
+  const abstractIndex = payload.abstract_inverted_index;
+  if (!abstractIndex || Object.keys(abstractIndex).length === 0) {
+    return null;
+  }
+
+  const decoded = decodeAbstractInvertedIndex(abstractIndex);
+  if (!decoded) {
+    return null;
+  }
+
+  return {
+    abstractText: decoded,
+    title: payload.title?.trim() || source.title,
+  };
+}
+
+async function resolveAbstractContext(source: Source) {
+  const embeddedAbstract = normalizeText(source.summary ?? "");
+  if (embeddedAbstract.length >= 120) {
+    return {
+      source,
+      abstractText: clipText(embeddedAbstract, 8_000),
+      abstractSource: "search-result",
+    };
+  }
+
+  const fetched = await fetchOpenAlexAbstract(source);
+  if (fetched) {
+    return {
+      source: {
+        ...source,
+        title: fetched.title,
+      },
+      abstractText: clipText(fetched.abstractText, 8_000),
+      abstractSource: "openalex-work",
+    };
+  }
+
+  return null;
+}
+
 function buildFallbackSummary(source: Source) {
   const authorText = source.authors.length > 0 ? source.authors.slice(0, 3).join(", ") : "unknown authors";
   const dateText = source.publicationDate || "unknown publication date";
@@ -50,23 +153,23 @@ function buildFallbackSummary(source: Source) {
   ].join(" ");
 }
 
-function buildSummaryPrompt(source: Source) {
-  const abstractText = source.summary?.trim() || "No abstract text was provided.";
+function buildSummaryPrompt(source: Source, abstractText: string) {
   const authorText = source.authors.length > 0 ? source.authors.join(", ") : "Unknown authors";
 
   return [
     "You are writing a concise academic source summary for students.",
-    "Write 3 to 4 sentences.",
+    "Write 4 to 6 sentences.",
+    "Summarize the actual paper abstract content provided below.",
     "Keep it factual and neutral. Do not invent methods, results, or statistics.",
-    "If details are missing, explicitly say the metadata is limited.",
-    "Mention likely relevance for research but avoid certainty claims.",
+    "Cover: research objective, method/design if present, major findings, and limitations/uncertainties.",
+    "If the abstract omits a detail, explicitly say it is not stated.",
     "",
     `Title: ${source.title}`,
     `Authors: ${authorText}`,
     `Publication date: ${source.publicationDate || "Unknown"}`,
     `Citation count: ${source.citationCount}`,
     `URL: ${source.externalUrl || "Unknown"}`,
-    `Abstract/context: ${abstractText}`,
+    `Abstract text: ${abstractText}`,
   ].join("\n");
 }
 
@@ -175,13 +278,13 @@ async function generateWithGoogle(prompt: string, apiKey: string, model: string,
   return text;
 }
 
-async function generateAiSummary(source: Source) {
+async function generateAiSummary(source: Source, abstractText: string) {
   const { apiKey, baseUrl, model } = getOptionalAiConfig();
   if (!apiKey) {
     throw new Error("AI_API_KEY is not configured.");
   }
 
-  const prompt = buildSummaryPrompt(source);
+  const prompt = buildSummaryPrompt(source, abstractText);
 
   if (apiKey.startsWith("AIza")) {
     return generateWithGoogle(prompt, apiKey, model, baseUrl);
@@ -207,11 +310,23 @@ export async function POST(request: Request) {
   const fallbackSummary = buildFallbackSummary(source);
 
   try {
-    const aiSummary = await generateAiSummary(source);
+    const context = await resolveAbstractContext(source);
+    if (!context) {
+      return apiSuccess({
+        summary: clipText(fallbackSummary, 1200),
+        provider: "fallback",
+        usedFallback: true,
+        warning:
+          "No paper abstract is available for this source yet, so a metadata-only summary was returned.",
+      });
+    }
+
+    const aiSummary = await generateAiSummary(context.source, context.abstractText);
     return apiSuccess({
       summary: clipText(aiSummary, 1200),
       provider: "ai",
       usedFallback: false,
+      abstractSource: context.abstractSource,
     });
   } catch (error) {
     return apiSuccess({

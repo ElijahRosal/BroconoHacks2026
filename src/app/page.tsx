@@ -83,6 +83,7 @@ interface SourceSummaryResponse {
     summary: string;
     provider: "ai" | "fallback";
     usedFallback: boolean;
+    abstractSource?: string;
     warning?: string;
   };
   error?: {
@@ -907,6 +908,10 @@ export default function Home() {
       setSummariesBySource((current) => ({
         ...current,
         [source.id]: payload.data?.summary || buildFallbackSummary(source),
+      }));
+      setSummaryErrorsBySource((current) => ({
+        ...current,
+        [source.id]: payload.data?.usedFallback ? payload.data.warning || "Using metadata-only summary." : "",
       }));
     } catch (error) {
       setSummariesBySource((current) => ({
